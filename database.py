@@ -92,14 +92,14 @@ class Database:
     ) -> bool:
         import sqlite3
         try:
-            await self.conn.execute(
+            cursor = await self.conn.execute(
                 """INSERT OR IGNORE INTO messages
                    (group_id, group_name, message_id, sender_id, sender_name, text, timestamp, biz_date)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (group_id, group_name, message_id, sender_id, sender_name, text, timestamp, biz_date),
             )
             await self.conn.commit()
-            return self.conn.total_changes > 0
+            return cursor.rowcount > 0
         except sqlite3.IntegrityError:
             return False
 
@@ -150,10 +150,16 @@ class Database:
         row = await cursor.fetchone()
         return row[0] if row else 0
 
-    async def delete_messages_by_date(self, biz_date: str) -> int:
-        cursor = await self.conn.execute(
-            "DELETE FROM messages WHERE biz_date = ?", (biz_date,)
-        )
+    async def delete_messages_by_date(self, biz_date: str, before_timestamp: int | None = None) -> int:
+        if before_timestamp is not None:
+            cursor = await self.conn.execute(
+                "DELETE FROM messages WHERE biz_date = ? AND timestamp <= ?",
+                (biz_date, before_timestamp),
+            )
+        else:
+            cursor = await self.conn.execute(
+                "DELETE FROM messages WHERE biz_date = ?", (biz_date,)
+            )
         await self.conn.commit()
         return cursor.rowcount
 

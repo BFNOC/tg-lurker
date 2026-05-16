@@ -9,8 +9,8 @@
 </div>
 
 {% if saved %}
-<div class="alert alert-success animate-fade-in">
-    <svg style="width:18px;height:18px;"><use href="#icon-check"></use></svg>
+<div class="alert alert-success animate-fade-in" role="alert">
+    <svg style="width:18px;height:18px;" aria-hidden="true" role="img"><use href="#icon-check"></use></svg>
     设置已成功保存
 </div>
 {% endif %}
@@ -18,7 +18,7 @@
 <form method="post" action="/settings" class="animate-fade-in" style="animation-delay: 0.1s;">
     <div class="card">
         <div class="card-title">
-            <svg><use href="#icon-dashboard"></use></svg>
+            <svg aria-hidden="true" role="img"><use href="#icon-dashboard"></use></svg>
             摘要计划与数据
         </div>
         
@@ -50,7 +50,7 @@
 
     <div class="card animate-fade-in" style="animation-delay: 0.2s;">
         <div class="card-title">
-            <svg style="width:20px;height:20px;"><use href="#icon-settings"></use></svg>
+            <svg style="width:20px;height:20px;" aria-hidden="true" role="img"><use href="#icon-settings"></use></svg>
             LLM 配置 (大语言模型)
         </div>
         
@@ -85,7 +85,7 @@
 
     <div class="card animate-fade-in" style="animation-delay: 0.3s;">
         <div class="card-title">
-            <svg style="width:20px;height:20px;"><use href="#icon-alert"></use></svg>
+            <svg style="width:20px;height:20px;" aria-hidden="true" role="img"><use href="#icon-alert"></use></svg>
             广告过滤
         </div>
         <p style="margin-bottom:16px;font-size:13px;color:var(--text-muted);">
@@ -101,7 +101,7 @@
 
     <div class="card animate-fade-in" style="animation-delay: 0.4s;">
         <div class="card-title">
-            <svg style="width:20px;height:20px;"><use href="#icon-summaries"></use></svg>
+            <svg style="width:20px;height:20px;" aria-hidden="true" role="img"><use href="#icon-summaries"></use></svg>
             Prompt 配置
         </div>
         <p style="margin-bottom:16px;font-size:13px;color:var(--text-muted);">
@@ -125,7 +125,7 @@
 
     <div style="margin-top:32px; display:flex; justify-content:flex-end;">
         <button type="submit" class="btn">
-            <svg style="width:18px;height:18px;"><use href="#icon-check"></use></svg>
+            <svg style="width:18px;height:18px;" aria-hidden="true" role="img"><use href="#icon-check"></use></svg>
             保存设置
         </button>
     </div>

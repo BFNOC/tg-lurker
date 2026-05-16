@@ -626,7 +626,7 @@
     {% block nav %}
     <nav class="top-nav">
         <a href="/dashboard" class="brand">
-            <svg style="width:24px;height:24px;"><use href="#icon-summaries"></use></svg>
+            <svg style="width:24px;height:24px;" aria-hidden="true" role="img"><use href="#icon-summaries"></use></svg>
             tg-lurker
         </a>
         <div class="links">
@@ -640,11 +640,11 @@
         <div class="spacer"></div>
         <div class="nav-actions">
             <button class="theme-toggle" onclick="toggleTheme()" aria-label="切换主题">
-                <svg class="moon-icon"><use href="#icon-moon"></use></svg>
-                <svg class="sun-icon"><use href="#icon-sun"></use></svg>
+                <svg class="moon-icon" aria-hidden="true" role="img"><use href="#icon-moon"></use></svg>
+                <svg class="sun-icon" aria-hidden="true" role="img"><use href="#icon-sun"></use></svg>
             </button>
             <a href="/logout" class="logout">
-                <svg style="width:18px;height:18px;"><use href="#icon-logout"></use></svg>
+                <svg style="width:18px;height:18px;" aria-hidden="true" role="img"><use href="#icon-logout"></use></svg>
                 退出
             </a>
         </div>
@@ -653,19 +653,19 @@
     <nav class="mobile-nav">
         <div class="mobile-links">
             <a href="/dashboard" {% if request.url.path == '/dashboard' %}class="active"{% endif %}>
-                <svg><use href="#icon-dashboard"></use></svg>
+                <svg aria-hidden="true" role="img"><use href="#icon-dashboard"></use></svg>
                 仪表盘
             </a>
             <a href="/groups" {% if request.url.path == '/groups' %}class="active"{% endif %}>
-                <svg><use href="#icon-groups"></use></svg>
+                <svg aria-hidden="true" role="img"><use href="#icon-groups"></use></svg>
                 群组
             </a>
             <a href="/summaries" {% if request.url.path == '/summaries' %}class="active"{% endif %}>
-                <svg><use href="#icon-summaries"></use></svg>
+                <svg aria-hidden="true" role="img"><use href="#icon-summaries"></use></svg>
                 摘要
             </a>
             <a href="/settings" {% if request.url.path == '/settings' %}class="active"{% endif %}>
-                <svg><use href="#icon-settings"></use></svg>
+                <svg aria-hidden="true" role="img"><use href="#icon-settings"></use></svg>
                 设置
             </a>
         </div>
@@ -679,26 +679,33 @@
     <div id="toast-container"></div>
 
     <script>
-        // Auto-inject CSRF token into all forms
-        document.addEventListener('DOMContentLoaded', function() {
-            const csrfToken = document.cookie.split('; ').find(c => c.startsWith('tg_lurker_csrf='))?.split('=')[1] || '';
-            document.querySelectorAll('form').forEach(form => {
-                if (form.method === 'post' || form.getAttribute('hx-post')) {
-                    if (!form.querySelector('input[name="csrf_token"]')) {
-                        const input = document.createElement('input');
-                        input.type = 'hidden';
-                        input.name = 'csrf_token';
-                        input.value = csrfToken;
-                        form.appendChild(input);
-                    }
+        // CSRF Utility
+        function getCsrfToken() {
+            return document.cookie.split('; ').find(c => c.startsWith('tg_lurker_csrf='))?.split('=')[1] || '';
+        }
+
+        // Auto-inject CSRF token into forms
+        function injectCsrf(root = document) {
+            const csrfToken = getCsrfToken();
+            root.querySelectorAll('form').forEach(form => {
+                if ((form.method === 'post' || form.getAttribute('hx-post')) && !form.querySelector('input[name="csrf_token"]')) {
+                    const input = document.createElement('input');
+                    input.type = 'hidden';
+                    input.name = 'csrf_token';
+                    input.value = csrfToken;
+                    form.appendChild(input);
                 }
             });
-        });
-        // Also inject for HTMX dynamic forms
+        }
+        
+        document.addEventListener('DOMContentLoaded', () => injectCsrf());
+        // Handle HTMX loaded content
+        document.addEventListener('htmx:afterOnLoad', (evt) => injectCsrf(evt.detail.target));
+
+        // Also inject for HTMX dynamic requests
         document.addEventListener('htmx:configRequest', function(evt) {
-            const csrfToken = document.cookie.split('; ').find(c => c.startsWith('tg_lurker_csrf='))?.split('=')[1] || '';
             if (evt.detail.verb !== 'get') {
-                evt.detail.parameters['csrf_token'] = csrfToken;
+                evt.detail.parameters['csrf_token'] = getCsrfToken();
             }
         });
 
@@ -721,7 +728,7 @@
             toast.className = `toast ${type}`;
             const iconId = type === 'success' ? '#icon-check' : '#icon-alert';
             toast.innerHTML = `
-                <svg style="width:18px;height:18px;"><use href="${iconId}"></use></svg>
+                <svg style="width:18px;height:18px;" aria-hidden="true" role="img"><use href="${iconId}"></use></svg>
                 <span>${message}</span>
             `;
             container.appendChild(toast);
@@ -733,17 +740,21 @@
         }
 
         // Password Toggle
-        function initPasswordToggles() {
-            document.querySelectorAll('.password-toggle').forEach(btn => {
+        function initPasswordToggles(root = document) {
+            root.querySelectorAll('.password-toggle').forEach(btn => {
+                if (btn.dataset.initialized) return;
                 btn.addEventListener('click', () => {
                     const input = btn.previousElementSibling;
                     const isPassword = input.type === 'password';
                     input.type = isPassword ? 'text' : 'password';
-                    btn.innerHTML = isPassword ? '<svg style="width:18px;height:18px;"><use href="#icon-eye-off"></use></svg>' : '<svg style="width:18px;height:18px;"><use href="#icon-eye"></use></svg>';
+                    btn.innerHTML = isPassword ? '<svg style="width:18px;height:18px;" aria-hidden="true" role="img"><use href="#icon-eye-off"></use></svg>' : '<svg style="width:18px;height:18px;" aria-hidden="true" role="img"><use href="#icon-eye"></use></svg>';
+                    btn.setAttribute('aria-label', isPassword ? '隐藏密码' : '显示密码');
                 });
+                btn.dataset.initialized = "true";
             });
         }
-        document.addEventListener('DOMContentLoaded', initPasswordToggles);
+        document.addEventListener('DOMContentLoaded', () => initPasswordToggles());
+        document.addEventListener('htmx:afterOnLoad', (evt) => initPasswordToggles(evt.detail.target));
 
         // HTMX Hooks
         document.addEventListener('htmx:afterRequest', function(evt) {
@@ -752,7 +763,8 @@
                     showToast('摘要已成功生成');
                 }
             } else {
-                showToast('操作失败，请重试', 'error');
+                const errMsg = evt.detail.xhr.status === 403 ? '权限不足或 CSRF 校验失败' : '操作失败，请重试';
+                showToast(errMsg, 'error');
             }
         });
     </script>

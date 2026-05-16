@@ -30,7 +30,7 @@
         <div class="summary-item animate-fade-in" style="animation-delay: {{ loop.index0 * 0.1 }}s;">
             <div class="summary-header">
                 <div class="summary-group-name">
-                    <svg style="width:18px;height:18px;vertical-align:middle;margin-right:4px;color:var(--accent);"><use href="#icon-groups"></use></svg>
+                    <svg style="width:18px;height:18px;vertical-align:middle;margin-right:4px;color:var(--accent);" aria-hidden="true" role="img"><use href="#icon-groups"></use></svg>
                     {{ s.group_name }}
                 </div>
                 <span class="summary-msg-count">{{ s.message_count }} 条消息</span>
@@ -40,7 +40,7 @@
         {% endfor %}
     {% else %}
         <div class="empty-state">
-            <svg><use href="#icon-summaries"></use></svg>
+            <svg aria-hidden="true" role="img"><use href="#icon-summaries"></use></svg>
             <h3>{{ selected_date }} 暂无摘要</h3>
             <p>该日期下没有发现任何已生成的摘要。您可以尝试切换日期，或者在仪表盘中手动触发生成。</p>
         </div>

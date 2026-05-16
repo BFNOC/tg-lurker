@@ -139,12 +139,14 @@ class Summarizer:
     async def _execute_summary(self, group_ids: list[int] | None = None, biz_date: str | None = None) -> dict:
         if biz_date is None:
             biz_date = datetime.now(self._tz).strftime("%Y-%m-%d")
+
+        snapshot_ts = int(datetime.now(self._tz).timestamp())
         active_groups = await self._db.get_active_groups()
 
         if group_ids is not None:
             active_groups = [g for g in active_groups if g["group_id"] in group_ids]
 
-        results: dict = {"date": biz_date, "groups": [], "failed": []}
+        results: dict = {"date": biz_date, "groups": [], "failed": [], "snapshot_ts": snapshot_ts}
 
         for group in active_groups:
             group_id = group["group_id"]

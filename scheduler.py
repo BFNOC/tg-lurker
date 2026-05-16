@@ -73,7 +73,8 @@ class SummaryScheduler:
 
             if results.get("ready_to_clear"):
                 biz_date = results["date"]
-                await self._summarizer._db.delete_messages_by_date(biz_date)
+                snapshot_ts = results.get("snapshot_ts")
+                await self._summarizer._db.delete_messages_by_date(biz_date, before_timestamp=snapshot_ts)
 
             logger.info(f"Summary complete: {len(results['groups'])} groups")
             self._retry_count = 0

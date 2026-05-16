@@ -22,25 +22,25 @@
             </thead>
             <tbody>
                 {% for g in groups %}
-                <tr>
+                <tr id="group-row-{{ g.group_id }}">
                     <td style="font-weight:700;color:var(--text);">{{ g.group_name }}</td>
                     <td class="group-id">{{ g.group_id }}</td>
-                    <td>
+                    <td id="status-{{ g.group_id }}">
                         {% if g.is_active %}
-                        <span class="badge badge-active"><span class="badge-dot"></span> 监控中</span>
+                        <span class="badge badge-active"><span class="badge-dot" aria-hidden="true"></span> 监控中</span>
                         {% else %}
-                        <span class="badge badge-paused"><span class="badge-dot"></span> 已暂停</span>
+                        <span class="badge badge-paused"><span class="badge-dot" aria-hidden="true"></span> 已暂停</span>
                         {% endif %}
                     </td>
                     <td style="text-align:right;">
-                        <form method="post" action="/groups/{{ g.group_id }}/toggle" style="display:inline-flex;align-items:center;">
+                        <form hx-post="/groups/{{ g.group_id }}/toggle" hx-target="#group-row-{{ g.group_id }}" hx-select="#group-row-{{ g.group_id }}" hx-swap="outerHTML" style="display:inline-flex;align-items:center;">
                             {% if g.is_active %}
                             <input type="hidden" name="is_active" value="0">
                             {% else %}
                             <input type="hidden" name="is_active" value="1">
                             {% endif %}
                             <label class="switch">
-                                <input type="checkbox" {% if g.is_active %}checked{% endif %} onchange="this.form.submit()">
+                                <input type="checkbox" {% if g.is_active %}checked{% endif %} onchange="this.form.dispatchEvent(new Event('submit'))" aria-label="切换群组监控状态">
                                 <span class="slider"></span>
                             </label>
                         </form>
@@ -52,7 +52,7 @@
     </div>
     {% else %}
     <div class="empty-state">
-        <svg><use href="#icon-groups"></use></svg>
+        <svg aria-hidden="true" role="img"><use href="#icon-groups"></use></svg>
         <h3>未发现群组</h3>
         <p>机器人尚未加入任何群组。请将机器人拉入群组并发送一条消息后再回来查看。</p>
     </div>

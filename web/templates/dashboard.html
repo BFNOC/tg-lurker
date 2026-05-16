@@ -67,21 +67,21 @@
     <div class="stat-grid">
         <div class="stat-item">
             <div class="stat-value">
-                <span class="status-dot {% if connected %}online{% else %}offline{% endif %}"></span>
+                <span class="status-dot {% if connected %}online{% else %}offline{% endif %}" aria-hidden="true"></span>
                 {% if connected %}在线{% else %}离线{% endif %}
             </div>
             <div class="stat-label">机器人状态</div>
         </div>
         <div class="stat-item">
             <div class="stat-value">
-                <svg style="width:24px;height:24px;color:var(--accent);"><use href="#icon-summaries"></use></svg>
+                <svg style="width:24px;height:24px;color:var(--accent);" aria-hidden="true" role="img"><use href="#icon-summaries"></use></svg>
                 {{ msg_count }}
             </div>
             <div class="stat-label">今日消息</div>
         </div>
         <div class="stat-item">
             <div class="stat-value">
-                <svg style="width:24px;height:24px;color:var(--accent);"><use href="#icon-groups"></use></svg>
+                <svg style="width:24px;height:24px;color:var(--accent);" aria-hidden="true" role="img"><use href="#icon-groups"></use></svg>
                 {{ group_count }}
             </div>
             <div class="stat-label">监控群组</div>
@@ -98,7 +98,7 @@
 {% if unsummarized %}
 <div class="card animate-fade-in" style="animation-delay: 0.05s; border-color: var(--warning);">
     <div class="card-title" style="color:var(--warning);">
-        <svg><use href="#icon-alert"></use></svg>
+        <svg aria-hidden="true" role="img"><use href="#icon-alert"></use></svg>
         有未摘要的历史消息
     </div>
     <p style="font-size:14px;color:var(--text-secondary);margin-bottom:12px;">以下日期的消息尚未生成摘要（可能是 LLM 调用失败）。请在下方手动触发。</p>
@@ -112,7 +112,7 @@
 
 <div class="card animate-fade-in" style="animation-delay: 0.1s;">
     <div class="card-title">
-        <svg><use href="#icon-summaries"></use></svg>
+        <svg aria-hidden="true" role="img"><use href="#icon-summaries"></use></svg>
         手动摘要
     </div>
     <p style="margin-bottom:16px;font-size:15px;color:var(--text-secondary);">
@@ -141,9 +141,15 @@
                 </div>
             </div>
             
-            <div class="chip-container">
+            <div class="chip-container" role="listbox" aria-label="群组选择" aria-multiselectable="true">
                 {% for g in groups %}
-                <div class="chip" data-id="{{ g.group_id }}" onclick="toggleGroupChip(this, '{{ g.group_id }}')">
+                <div class="chip" 
+                     data-id="{{ g.group_id }}" 
+                     onclick="toggleGroupChip(this, '{{ g.group_id }}')"
+                     onkeydown="if(event.key === ' ' || event.key === 'Enter') { event.preventDefault(); toggleGroupChip(this, '{{ g.group_id }}'); }"
+                     role="option" 
+                     aria-selected="false"
+                     tabindex="0">
                     {{ g.group_name }}
                 </div>
                 {% endfor %}
@@ -166,6 +172,7 @@
 <script>
     function toggleGroupChip(el, id) {
         const isSelected = el.classList.toggle('selected');
+        el.setAttribute('aria-selected', isSelected);
         const container = document.getElementById('hidden-group-inputs');
         if (isSelected) {
             const input = document.createElement('input');
