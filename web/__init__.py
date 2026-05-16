@@ -2,15 +2,27 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from database import Database
 from config import Config
 
 _HERE = Path(__file__).parent
 templates = Jinja2Templates(directory=str(_HERE / "templates"))
+
+
+class CSRFContextMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        from web.auth import get_csrf_token, set_csrf_cookie, CSRF_COOKIE
+        token = get_csrf_token(request)
+        request.state.csrf_token = token
+        response = await call_next(request)
+        if not request.cookies.get(CSRF_COOKIE):
+            set_csrf_cookie(response, token)
+        return response
 
 
 def create_app(config: Config, db: Database, bot=None, scheduler=None) -> FastAPI:
@@ -20,6 +32,7 @@ def create_app(config: Config, db: Database, bot=None, scheduler=None) -> FastAP
     app.state.bot = bot
     app.state.scheduler = scheduler
 
+    app.add_middleware(CSRFContextMiddleware)
     app.mount("/static", StaticFiles(directory=str(_HERE / "static")), name="static")
 
     from web.auth import router as auth_router
@@ -27,5 +40,7 @@ def create_app(config: Config, db: Database, bot=None, scheduler=None) -> FastAP
 
     app.include_router(auth_router)
     app.include_router(routes_router)
+
+    templates.env.globals["csrf_token_value"] = lambda request: getattr(request.state, "csrf_token", "")
 
     return app

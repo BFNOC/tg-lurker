@@ -679,6 +679,29 @@
     <div id="toast-container"></div>
 
     <script>
+        // Auto-inject CSRF token into all forms
+        document.addEventListener('DOMContentLoaded', function() {
+            const csrfToken = document.cookie.split('; ').find(c => c.startsWith('tg_lurker_csrf='))?.split('=')[1] || '';
+            document.querySelectorAll('form').forEach(form => {
+                if (form.method === 'post' || form.getAttribute('hx-post')) {
+                    if (!form.querySelector('input[name="csrf_token"]')) {
+                        const input = document.createElement('input');
+                        input.type = 'hidden';
+                        input.name = 'csrf_token';
+                        input.value = csrfToken;
+                        form.appendChild(input);
+                    }
+                }
+            });
+        });
+        // Also inject for HTMX dynamic forms
+        document.addEventListener('htmx:configRequest', function(evt) {
+            const csrfToken = document.cookie.split('; ').find(c => c.startsWith('tg_lurker_csrf='))?.split('=')[1] || '';
+            if (evt.detail.verb !== 'get') {
+                evt.detail.parameters['csrf_token'] = csrfToken;
+            }
+        });
+
         // Theme Toggle
         const html = document.documentElement;
         const savedTheme = localStorage.getItem('theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');

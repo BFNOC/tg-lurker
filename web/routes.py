@@ -7,7 +7,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from web import templates
-from web.auth import is_authenticated
+from web.auth import is_authenticated, get_csrf_token, verify_csrf
 
 router = APIRouter()
 
@@ -15,6 +15,16 @@ router = APIRouter()
 def _require_auth(request: Request):
     if not is_authenticated(request):
         return RedirectResponse("/login", status_code=303)
+    return None
+
+
+def _csrf_context(request: Request) -> dict:
+    return {"csrf_token": get_csrf_token(request)}
+
+
+async def _require_csrf(request: Request):
+    if not await verify_csrf(request):
+        return HTMLResponse("<p style='color:var(--danger)'>CSRF token invalid</p>", status_code=403)
     return None
 
 
@@ -39,6 +49,9 @@ async def block_sender(request: Request):
     redirect = _require_auth(request)
     if redirect:
         return redirect
+    csrf_err = await _require_csrf(request)
+    if csrf_err:
+        return csrf_err
 
     db = request.app.state.db
     form = await request.form()
@@ -56,6 +69,9 @@ async def unblock_sender(request: Request):
     redirect = _require_auth(request)
     if redirect:
         return redirect
+    csrf_err = await _require_csrf(request)
+    if csrf_err:
+        return csrf_err
 
     db = request.app.state.db
     form = await request.form()
@@ -162,6 +178,9 @@ async def toggle_group(request: Request, group_id: int):
     redirect = _require_auth(request)
     if redirect:
         return redirect
+    csrf_err = await _require_csrf(request)
+    if csrf_err:
+        return csrf_err
 
     db = request.app.state.db
     form = await request.form()
@@ -204,12 +223,15 @@ async def settings_page(request: Request):
     db = request.app.state.db
     config = request.app.state.config
 
+    raw_key = await db.get_setting("llm_api_key", config.llm_api_key)
+    masked_key = "••••••••" + raw_key[-4:] if len(raw_key) > 4 else "••••••••"
+
     settings = {
         "summary_cron": await db.get_setting("summary_cron", config.summary_cron),
         "summary_retention_days": await db.get_setting("summary_retention_days", str(config.summary_retention_days)),
         "tg_push_enabled": await db.get_setting("tg_push_enabled", str(config.tg_push_enabled).lower()),
         "llm_base_url": await db.get_setting("llm_base_url", config.llm_base_url),
-        "llm_api_key": await db.get_setting("llm_api_key", config.llm_api_key),
+        "llm_api_key": masked_key,
         "llm_model": await db.get_setting("llm_model", config.llm_model),
         "llm_api_format": await db.get_setting("llm_api_format", config.llm_api_format),
         "system_prompt": await db.get_setting("system_prompt", ""),
@@ -228,6 +250,9 @@ async def save_settings(request: Request):
     redirect = _require_auth(request)
     if redirect:
         return redirect
+    csrf_err = await _require_csrf(request)
+    if csrf_err:
+        return csrf_err
 
     db = request.app.state.db
     form = await request.form()
@@ -236,18 +261,23 @@ async def save_settings(request: Request):
                 "llm_base_url", "llm_api_key", "llm_model", "llm_api_format",
                 "system_prompt", "user_prompt", "ad_keywords"):
         value = form.get(key, "")
+        if key == "llm_api_key" and value.startswith("••••"):
+            continue
         if value:
             await db.set_setting(key, str(value))
         elif key in ("system_prompt", "user_prompt", "ad_keywords"):
             await db.set_setting(key, "")
 
     config = request.app.state.config
+    raw_key = await db.get_setting("llm_api_key", config.llm_api_key)
+    masked_key = "••••••••" + raw_key[-4:] if len(raw_key) > 4 else "••••••••"
+
     settings = {
         "summary_cron": await db.get_setting("summary_cron", config.summary_cron),
         "summary_retention_days": await db.get_setting("summary_retention_days", str(config.summary_retention_days)),
         "tg_push_enabled": await db.get_setting("tg_push_enabled", str(config.tg_push_enabled).lower()),
         "llm_base_url": await db.get_setting("llm_base_url", config.llm_base_url),
-        "llm_api_key": await db.get_setting("llm_api_key", config.llm_api_key),
+        "llm_api_key": masked_key,
         "llm_model": await db.get_setting("llm_model", config.llm_model),
         "llm_api_format": await db.get_setting("llm_api_format", config.llm_api_format),
         "system_prompt": await db.get_setting("system_prompt", ""),
@@ -266,6 +296,9 @@ async def trigger_summary(request: Request):
     redirect = _require_auth(request)
     if redirect:
         return redirect
+    csrf_err = await _require_csrf(request)
+    if csrf_err:
+        return csrf_err
 
     scheduler = request.app.state.scheduler
     if scheduler is None:
