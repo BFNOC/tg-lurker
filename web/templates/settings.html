@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+{% block title_suffix %} - 设置{% endblock %}
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>系统设置</h1>
+        <p>配置机器人的运行参数与 LLM 接口</p>
+    </div>
+</div>
+
+{% if saved %}
+<div class="alert alert-success animate-fade-in">
+    <svg style="width:18px;height:18px;"><use href="#icon-check"></use></svg>
+    设置已成功保存
+</div>
+{% endif %}
+
+<form method="post" action="/settings" class="animate-fade-in" style="animation-delay: 0.1s;">
+    <div class="card">
+        <div class="card-title">
+            <svg><use href="#icon-dashboard"></use></svg>
+            摘要计划与数据
+        </div>
+        
+        <div class="form-group">
+            <label for="summary_cron">生成时间 (Cron 表达式) <span style="font-weight:400;color:var(--text-muted); opacity: 0.8;">(时区: Asia/Shanghai)</span></label>
+            <input type="text" id="summary_cron" name="summary_cron" value="{{ settings.summary_cron }}" placeholder="0 22 * * *">
+            <div class="form-hint">摘要自动生成的 Cron 表达式，例如 "0 22 * * *" 表示每天 22:00 生成</div>
+        </div>
+
+        <div class="section-divider"></div>
+
+        <div class="form-group">
+            <label for="retention">数据保留天数</label>
+            <input type="number" id="retention" name="summary_retention_days" value="{{ settings.summary_retention_days }}" min="1" max="365">
+            <div class="form-hint">消息历史在数据库中保留的天数</div>
+        </div>
+
+        <div class="section-divider"></div>
+
+        <div class="form-group">
+            <label for="tg_push">Telegram 推送</label>
+            <select id="tg_push" name="tg_push_enabled">
+                <option value="true" {% if settings.tg_push_enabled == "true" %}selected{% endif %}>已启用</option>
+                <option value="false" {% if settings.tg_push_enabled == "false" %}selected{% endif %}>已禁用</option>
+            </select>
+            <div class="form-hint">摘要生成后是否自动推送到对应的 Telegram 群组</div>
+        </div>
+    </div>
+
+    <div class="card animate-fade-in" style="animation-delay: 0.2s;">
+        <div class="card-title">
+            <svg style="width:20px;height:20px;"><use href="#icon-settings"></use></svg>
+            LLM 配置 (大语言模型)
+        </div>
+        
+        <div class="form-group">
+            <label for="llm_url">API 基础地址 (Base URL)</label>
+            <input type="url" id="llm_url" name="llm_base_url" value="{{ settings.llm_base_url }}" placeholder="https://api.deepseek.com/v1">
+        </div>
+
+        <div class="form-group">
+            <label for="llm_key">API 密钥 (API Key)</label>
+            <div class="input-wrapper">
+                <input type="password" id="llm_key" name="llm_api_key" value="{{ settings.llm_api_key }}">
+                <button type="button" class="password-toggle" aria-label="显示密码">
+                    <svg style="width:18px;height:18px;"><use href="#icon-eye"></use></svg>
+                </button>
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label for="llm_model">模型名称 (Model)</label>
+            <input type="text" id="llm_model" name="llm_model" value="{{ settings.llm_model }}" placeholder="deepseek-chat">
+        </div>
+
+        <div class="form-group" style="margin-bottom:0;">
+            <label for="llm_format">API 调用格式</label>
+            <select id="llm_format" name="llm_api_format">
+                <option value="chat" {% if settings.llm_api_format == "chat" %}selected{% endif %}>Chat Completions (/chat/completions)</option>
+                <option value="responses" {% if settings.llm_api_format == "responses" %}selected{% endif %}>Responses (/responses)</option>
+            </select>
+        </div>
+    </div>
+
+    <div class="card animate-fade-in" style="animation-delay: 0.3s;">
+        <div class="card-title">
+            <svg style="width:20px;height:20px;"><use href="#icon-alert"></use></svg>
+            广告过滤
+        </div>
+        <p style="margin-bottom:16px;font-size:13px;color:var(--text-muted);">
+            关键词黑名单。每行一个关键词，消息中命中 2 个及以上关键词时自动过滤。不区分大小写。
+        </p>
+
+        <div class="form-group" style="margin-bottom:0;">
+            <label for="ad_keywords">关键词列表（每行一个）</label>
+            <textarea id="ad_keywords" name="ad_keywords" rows="8" placeholder="出售&#10;下单&#10;批发&#10;月卡&#10;年卡&#10;点击头像&#10;加入公群&#10;保修&#10;质保&#10;免费测试">{{ settings.ad_keywords }}</textarea>
+            <div class="form-hint">示例关键词：出售、下单、批发、月卡、点击头像、保修、免费测试。命中 2 个以上才过滤，避免误杀。</div>
+        </div>
+    </div>
+
+    <div class="card animate-fade-in" style="animation-delay: 0.4s;">
+        <div class="card-title">
+            <svg style="width:20px;height:20px;"><use href="#icon-summaries"></use></svg>
+            Prompt 配置
+        </div>
+        <p style="margin-bottom:16px;font-size:13px;color:var(--text-muted);">
+            自定义 LLM 的提示词。留空则使用内置默认 Prompt。User Prompt 中用 <code>{messages}</code> 表示消息内容占位符。
+        </p>
+
+        <div class="form-group">
+            <label for="system_prompt">System Prompt</label>
+            <textarea id="system_prompt" name="system_prompt" rows="5" placeholder="留空使用默认：你是一个群聊摘要助手...">{{ settings.system_prompt }}</textarea>
+            <div class="form-hint">系统角色设定，控制模型的行为风格和输出格式</div>
+        </div>
+
+        <div class="section-divider"></div>
+
+        <div class="form-group" style="margin-bottom:0;">
+            <label for="user_prompt">User Prompt 模板</label>
+            <textarea id="user_prompt" name="user_prompt" rows="3" placeholder="留空使用默认。必须包含 {messages} 占位符">{{ settings.user_prompt }}</textarea>
+            <div class="form-hint">用户消息模板，<code>{messages}</code> 会被替换为实际群聊消息</div>
+        </div>
+    </div>
+
+    <div style="margin-top:32px; display:flex; justify-content:flex-end;">
+        <button type="submit" class="btn">
+            <svg style="width:18px;height:18px;"><use href="#icon-check"></use></svg>
+            保存设置
+        </button>
+    </div>
+</form>
+{% endblock %}

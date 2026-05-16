@@ -1,0 +1,197 @@
+{% extends "base.html" %}
+{% block title_suffix %} - 仪表盘{% endblock %}
+{% block content %}
+<style>
+    .chip-container {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 12px;
+    }
+    .chip {
+        padding: 8px 16px;
+        border-radius: var(--radius-sm);
+        border: 2px solid var(--border);
+        background: var(--bg-raised);
+        color: var(--text-secondary);
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: var(--transition);
+        user-select: none;
+    }
+    .chip:hover {
+        border-color: var(--accent);
+        color: var(--accent);
+        background: var(--accent-light);
+    }
+    .chip.selected {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #fff;
+        box-shadow: 0 4px 12px oklch(0.55 0.14 35 / 0.2);
+    }
+    .chip.selected:hover {
+        background: var(--accent-hover);
+        border-color: var(--accent-hover);
+    }
+    .chip-actions {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+    }
+    .btn-link {
+        background: none;
+        border: none;
+        color: var(--accent);
+        font-size: 13px;
+        font-weight: 700;
+        cursor: pointer;
+        padding: 0;
+        transition: var(--transition);
+    }
+    .btn-link:hover {
+        color: var(--accent-hover);
+        text-decoration: underline;
+    }
+</style>
+
+<div class="page-header">
+    <div>
+        <h1>仪表盘</h1>
+        <p>欢迎回来，这是您的实时运行状态</p>
+    </div>
+</div>
+
+<div class="card animate-fade-in">
+    <div class="stat-grid">
+        <div class="stat-item">
+            <div class="stat-value">
+                <span class="status-dot {% if connected %}online{% else %}offline{% endif %}"></span>
+                {% if connected %}在线{% else %}离线{% endif %}
+            </div>
+            <div class="stat-label">机器人状态</div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-value">
+                <svg style="width:24px;height:24px;color:var(--accent);"><use href="#icon-summaries"></use></svg>
+                {{ msg_count }}
+            </div>
+            <div class="stat-label">今日消息</div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-value">
+                <svg style="width:24px;height:24px;color:var(--accent);"><use href="#icon-groups"></use></svg>
+                {{ group_count }}
+            </div>
+            <div class="stat-label">监控群组</div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-value small-text">
+                {{ last_summary or "暂无数据" }}
+            </div>
+            <div class="stat-label">上次摘要</div>
+        </div>
+    </div>
+</div>
+
+{% if unsummarized %}
+<div class="card animate-fade-in" style="animation-delay: 0.05s; border-color: var(--warning);">
+    <div class="card-title" style="color:var(--warning);">
+        <svg><use href="#icon-alert"></use></svg>
+        有未摘要的历史消息
+    </div>
+    <p style="font-size:14px;color:var(--text-secondary);margin-bottom:12px;">以下日期的消息尚未生成摘要（可能是 LLM 调用失败）。请在下方手动触发。</p>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;">
+        {% for u in unsummarized %}
+        <span class="badge badge-paused">{{ u.biz_date }} ({{ u.msg_count }}条)</span>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
+<div class="card animate-fade-in" style="animation-delay: 0.1s;">
+    <div class="card-title">
+        <svg><use href="#icon-summaries"></use></svg>
+        手动摘要
+    </div>
+    <p style="margin-bottom:16px;font-size:15px;color:var(--text-secondary);">
+        生成消息摘要。可选择日期和特定群组。
+    </p>
+
+    <form hx-post="/summary/trigger" hx-target="#summary-result" hx-indicator="#summary-spinner">
+        <div class="form-group">
+            <label>目标日期</label>
+            <select name="biz_date">
+                <option value="{{ biz_date }}">今天 ({{ biz_date }})</option>
+                {% for u in unsummarized %}
+                {% if u.biz_date != biz_date %}
+                <option value="{{ u.biz_date }}">{{ u.biz_date }} ({{ u.msg_count }}条未摘要)</option>
+                {% endif %}
+                {% endfor %}
+            </select>
+        </div>
+        <div class="form-group">
+            <div style="display:flex; justify-content:space-between; align-items:flex-end; margin-bottom: 8px;">
+                <label style="margin-bottom:0;">选择群组（可多选，留空=全部）</label>
+                <div class="chip-actions">
+                    <button type="button" class="btn-link" onclick="selectAllGroups()">全选</button>
+                    <span style="color:var(--border); font-size:12px;">|</span>
+                    <button type="button" class="btn-link" onclick="clearAllGroups()">清除</button>
+                </div>
+            </div>
+            
+            <div class="chip-container">
+                {% for g in groups %}
+                <div class="chip" data-id="{{ g.group_id }}" onclick="toggleGroupChip(this, '{{ g.group_id }}')">
+                    {{ g.group_name }}
+                </div>
+                {% endfor %}
+            </div>
+            <div id="hidden-group-inputs"></div>
+        </div>
+        
+        <button type="submit" class="btn">
+            <span class="btn-text">立即生成</span>
+            <div id="summary-spinner" class="htmx-indicator">
+                <div class="spinner"></div>
+                <span>生成中...</span>
+            </div>
+        </button>
+    </form>
+
+    <div id="summary-result" style="margin-top:20px;"></div>
+</div>
+
+<script>
+    function toggleGroupChip(el, id) {
+        const isSelected = el.classList.toggle('selected');
+        const container = document.getElementById('hidden-group-inputs');
+        if (isSelected) {
+            const input = document.createElement('input');
+            input.type = 'hidden';
+            input.name = 'group_ids';
+            input.value = id;
+            input.id = 'input-' + id;
+            container.appendChild(input);
+        } else {
+            const input = document.getElementById('input-' + id);
+            if (input) input.remove();
+        }
+    }
+
+    function selectAllGroups() {
+        document.querySelectorAll('.chip').forEach(el => {
+            if (!el.classList.contains('selected')) {
+                toggleGroupChip(el, el.dataset.id);
+            }
+        });
+    }
+
+    function clearAllGroups() {
+        document.querySelectorAll('.chip.selected').forEach(el => {
+            toggleGroupChip(el, el.dataset.id);
+        });
+    }
+</script>
+{% endblock %}

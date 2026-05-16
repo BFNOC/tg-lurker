@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title_suffix %} - 摘要{% endblock %}
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>历史摘要</h1>
+        <p>查看并管理过去生成的群组消息摘要</p>
+    </div>
+</div>
+
+<div class="card animate-fade-in">
+    <form method="get" action="/summaries" class="form-row" style="margin-bottom:24px;">
+        <div class="form-group" style="margin-bottom:0;flex:1;">
+            <label for="date-select">选择日期</label>
+            <select id="date-select" name="date" onchange="this.form.submit()">
+                {% for d in available_dates %}
+                <option value="{{ d }}" {% if d == selected_date %}selected{% endif %}>{{ d }}</option>
+                {% endfor %}
+                {% if not available_dates %}
+                <option value="{{ selected_date }}">{{ selected_date }}</option>
+                {% endif %}
+            </select>
+        </div>
+    </form>
+
+    <div class="section-divider"></div>
+
+    {% if summaries %}
+        {% for s in summaries %}
+        <div class="summary-item animate-fade-in" style="animation-delay: {{ loop.index0 * 0.1 }}s;">
+            <div class="summary-header">
+                <div class="summary-group-name">
+                    <svg style="width:18px;height:18px;vertical-align:middle;margin-right:4px;color:var(--accent);"><use href="#icon-groups"></use></svg>
+                    {{ s.group_name }}
+                </div>
+                <span class="summary-msg-count">{{ s.message_count }} 条消息</span>
+            </div>
+            <div class="summary-text">{{ s.summary_text }}</div>
+        </div>
+        {% endfor %}
+    {% else %}
+        <div class="empty-state">
+            <svg><use href="#icon-summaries"></use></svg>
+            <h3>{{ selected_date }} 暂无摘要</h3>
+            <p>该日期下没有发现任何已生成的摘要。您可以尝试切换日期，或者在仪表盘中手动触发生成。</p>
+        </div>
+    {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,11 @@
+services:
+  tg-lurker:
+    build: .
+    restart: always
+    env_file: .env
+    ports:
+      - "${WEB_PORT:-8080}:${WEB_PORT:-8080}"
+    volumes:
+      - ./data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

@@ -1,0 +1,208 @@
+{% extends "base.html" %}
+{% block title_suffix %} - 帮助{% endblock %}
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>使用指南</h1>
+        <p>如何配置和使用 tg-lurker</p>
+    </div>
+</div>
+
+<div class="card animate-fade-in">
+    <div class="card-title">
+        <svg><use href="#icon-dashboard"></use></svg>
+        快速开始
+    </div>
+    <div class="help-content">
+        <p>tg-lurker 是一个 Telegram 群聊监控工具，它以 <strong>Userbot</strong>（真人账号）方式静默加入群聊，收集消息并通过 AI 生成每日摘要。</p>
+    </div>
+</div>
+
+<div class="card animate-fade-in" style="animation-delay: 0.1s;">
+    <div class="card-title">
+        <svg><use href="#icon-settings"></use></svg>
+        第一步：获取 Telegram API 凭证
+    </div>
+    <div class="help-content">
+        <ol>
+            <li>访问 <a href="https://my.telegram.org" target="_blank" rel="noopener">https://my.telegram.org</a></li>
+            <li>使用你的 Telegram 手机号登录</li>
+            <li>点击 <strong>API development tools</strong></li>
+            <li>填写应用信息（App title 和 Short name 随意填写）</li>
+            <li>获取 <code>API_ID</code>（数字）和 <code>API_HASH</code>（字符串）</li>
+        </ol>
+        <div class="help-warning">
+            <svg style="width:18px;height:18px;flex-shrink:0;"><use href="#icon-alert"></use></svg>
+            <span>请使用小号或备用号。频繁操作可能触发 Telegram 风控。建议新号先正常使用几天再运行脚本。</span>
+        </div>
+    </div>
+</div>
+
+<div class="card animate-fade-in" style="animation-delay: 0.2s;">
+    <div class="card-title">
+        <svg><use href="#icon-groups"></use></svg>
+        第二步：获取 Owner ID
+    </div>
+    <div class="help-content">
+        <p>Owner ID 是接收摘要推送的用户 ID。获取方式：</p>
+        <ol>
+            <li>在 Telegram 中搜索 <code>@userinfobot</code></li>
+            <li>向它发送任意消息</li>
+            <li>它会回复你的 User ID（纯数字）</li>
+        </ol>
+        <p>或者使用 <code>@RawDataBot</code>，转发任意消息给它即可看到 sender ID。</p>
+    </div>
+</div>
+
+<div class="card animate-fade-in" style="animation-delay: 0.3s;">
+    <div class="card-title">
+        <svg><use href="#icon-summaries"></use></svg>
+        第三步：配置 LLM API
+    </div>
+    <div class="help-content">
+        <p>支持任何 OpenAI 兼容的 API。推荐国产平台（便宜）：</p>
+        <table>
+            <thead>
+                <tr><th>平台</th><th>Base URL</th><th>模型</th><th>价格</th></tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><strong>DeepSeek</strong></td>
+                    <td><code>https://api.deepseek.com/v1</code></td>
+                    <td>deepseek-chat</td>
+                    <td>¥1/M tokens</td>
+                </tr>
+                <tr>
+                    <td><strong>通义千问</strong></td>
+                    <td><code>https://dashscope.aliyuncs.com/compatible-mode/v1</code></td>
+                    <td>qwen-plus</td>
+                    <td>¥0.8/M tokens</td>
+                </tr>
+                <tr>
+                    <td><strong>智谱 AI</strong></td>
+                    <td><code>https://open.bigmodel.cn/api/paas/v4</code></td>
+                    <td>glm-4-flash</td>
+                    <td>有免费额度</td>
+                </tr>
+            </tbody>
+        </table>
+        <p style="margin-top:12px;color:var(--text-muted);font-size:13px;">20 个群每日摘要成本约 ¥0.05，几乎免费。</p>
+    </div>
+</div>
+
+<div class="card animate-fade-in" style="animation-delay: 0.4s;">
+    <div class="card-title">
+        <svg><use href="#icon-settings"></use></svg>
+        第四步：首次登录
+    </div>
+    <div class="help-content">
+        <p>Telethon 首次运行需要交互式验证：</p>
+        <pre class="code-block">
+# 本地运行（Docker 环境）
+docker compose run --rm tg-lurker python main.py
+
+# 按提示输入：
+# 1. 手机号（带国际区号，如 +86xxxxx）
+# 2. Telegram 发送的验证码
+# 3. 如有两步验证，输入密码
+
+# 登录成功后 session 文件保存在 ./data/
+# 之后正常启动：
+docker compose up -d</pre>
+    </div>
+</div>
+
+<div class="card animate-fade-in" style="animation-delay: 0.5s;">
+    <div class="card-title">
+        <svg><use href="#icon-alert"></use></svg>
+        代理配置
+    </div>
+    <div class="help-content">
+        <p>如果服务器无法直连 Telegram，需要配置代理：</p>
+        <table>
+            <thead>
+                <tr><th>环境变量</th><th>说明</th><th>示例</th></tr>
+            </thead>
+            <tbody>
+                <tr><td><code>PROXY_TYPE</code></td><td>代理类型</td><td>socks5 / http</td></tr>
+                <tr><td><code>PROXY_HOST</code></td><td>代理地址</td><td>127.0.0.1</td></tr>
+                <tr><td><code>PROXY_PORT</code></td><td>代理端口</td><td>1080</td></tr>
+                <tr><td><code>LLM_PROXY_URL</code></td><td>LLM 调用代理（独立）</td><td>http://127.0.0.1:7897</td></tr>
+            </tbody>
+        </table>
+        <div class="help-warning">
+            <svg style="width:18px;height:18px;flex-shrink:0;"><use href="#icon-alert"></use></svg>
+            <span>Telegram 代理和 LLM 代理是独立配置的。Docker 中使用 <code>host.docker.internal</code> 访问宿主机代理。</span>
+        </div>
+    </div>
+</div>
+
+<div class="card animate-fade-in" style="animation-delay: 0.6s;">
+    <div class="card-title">
+        <svg><use href="#icon-groups"></use></svg>
+        常见问题
+    </div>
+    <div class="help-content">
+        <details>
+            <summary>如何添加监控群组？</summary>
+            <p>用你的 Telegram 账号加入群组即可。机器人启动后会自动同步已加入的群列表，然后在「群组」页面勾选需要监控的群。</p>
+        </details>
+        <details>
+            <summary>摘要生成失败怎么办？</summary>
+            <p>检查 LLM 配置是否正确（Base URL、API Key、Model）。可以在设置页面修改后，到仪表盘手动触发测试。失败的群消息不会被清空，下次会重试。</p>
+        </details>
+        <details>
+            <summary>账号会被封吗？</summary>
+            <p>风险存在但较低。建议：1) 使用备用号；2) 新号先正常使用几天；3) 不要频繁加入/退出群；4) 不要主动发消息。本工具只做被动监听。</p>
+        </details>
+        <details>
+            <summary>数据安全吗？</summary>
+            <p>所有数据存储在本地 SQLite 中，不上传任何第三方服务（除 LLM API 调用）。Session 文件等同于登录凭证，请妥善保管。</p>
+        </details>
+    </div>
+</div>
+
+<style>
+    .help-content { font-size: 15px; line-height: 1.8; color: var(--text); }
+    .help-content p { margin-bottom: 12px; }
+    .help-content ol { padding-left: 20px; margin-bottom: 16px; }
+    .help-content li { margin-bottom: 8px; }
+    .help-content code { background: var(--bg); border: 1px solid var(--border); padding: 2px 6px; border-radius: 4px; font-size: 13px; }
+    .help-content a { color: var(--accent); text-decoration: none; font-weight: 600; }
+    .help-content a:hover { text-decoration: underline; }
+    .help-content table { margin: 12px 0; }
+    .help-warning {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        background: var(--warning-bg);
+        border: 1px solid var(--warning);
+        border-radius: var(--radius-sm);
+        padding: 12px 16px;
+        margin-top: 16px;
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--text);
+    }
+    .code-block {
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        padding: 16px;
+        font-size: 13px;
+        line-height: 1.6;
+        overflow-x: auto;
+        white-space: pre;
+        font-family: "SF Mono", "Fira Code", monospace;
+    }
+    details { margin-bottom: 12px; }
+    details summary {
+        cursor: pointer;
+        font-weight: 600;
+        padding: 8px 0;
+        color: var(--text);
+    }
+    details summary:hover { color: var(--accent); }
+    details p { padding: 4px 0 8px 0; color: var(--text-secondary); }
+</style>
+{% endblock %}

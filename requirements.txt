@@ -1,0 +1,12 @@
+telethon==1.37.0
+aiosqlite==0.20.0
+apscheduler==3.10.4
+openai==1.82.0
+pysocks==1.7.1
+python-dotenv==1.0.1
+httpx[socks]==0.28.1
+fastapi==0.115.12
+uvicorn==0.34.2
+jinja2==3.1.6
+python-multipart==0.0.20
+itsdangerous==2.2.0

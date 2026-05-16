@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title_suffix %} - 群组{% endblock %}
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>监控群组</h1>
+        <p>管理机器人正在监控的所有 Telegram 群组</p>
+    </div>
+</div>
+
+<div class="card animate-fade-in">
+    {% if groups %}
+    <div class="responsive-table">
+        <table>
+            <thead>
+                <tr>
+                    <th>群组名称</th>
+                    <th>群组 ID</th>
+                    <th>当前状态</th>
+                    <th style="text-align:right;">操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for g in groups %}
+                <tr>
+                    <td style="font-weight:700;color:var(--text);">{{ g.group_name }}</td>
+                    <td class="group-id">{{ g.group_id }}</td>
+                    <td>
+                        {% if g.is_active %}
+                        <span class="badge badge-active"><span class="badge-dot"></span> 监控中</span>
+                        {% else %}
+                        <span class="badge badge-paused"><span class="badge-dot"></span> 已暂停</span>
+                        {% endif %}
+                    </td>
+                    <td style="text-align:right;">
+                        <form method="post" action="/groups/{{ g.group_id }}/toggle" style="display:inline-flex;align-items:center;">
+                            {% if g.is_active %}
+                            <input type="hidden" name="is_active" value="0">
+                            {% else %}
+                            <input type="hidden" name="is_active" value="1">
+                            {% endif %}
+                            <label class="switch">
+                                <input type="checkbox" {% if g.is_active %}checked{% endif %} onchange="this.form.submit()">
+                                <span class="slider"></span>
+                            </label>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <div class="empty-state">
+        <svg><use href="#icon-groups"></use></svg>
+        <h3>未发现群组</h3>
+        <p>机器人尚未加入任何群组。请将机器人拉入群组并发送一条消息后再回来查看。</p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
