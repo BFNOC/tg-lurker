@@ -6,9 +6,13 @@
         <h1>监控群组</h1>
         <p>管理机器人正在监控的所有 Telegram 群组</p>
     </div>
+    <button class="btn btn-sm" hx-post="/groups/sync" hx-target="#groups-container" hx-select="#groups-container" hx-swap="outerHTML">
+        <svg style="width:16px;height:16px;" aria-hidden="true" role="img"><use href="#icon-refresh"></use></svg>
+        刷新群组
+    </button>
 </div>
 
-<div class="card animate-fade-in">
+<div class="card animate-fade-in" id="groups-container">
     {% if groups %}
     <div class="responsive-table">
         <table>

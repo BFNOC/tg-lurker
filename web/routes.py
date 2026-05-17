@@ -195,6 +195,27 @@ async def groups_page(request: Request):
     })
 
 
+@router.post("/groups/sync")
+async def sync_groups(request: Request):
+    redirect = _require_auth(request)
+    if redirect:
+        return redirect
+    csrf_err = await _require_csrf(request)
+    if csrf_err:
+        return csrf_err
+
+    bot = request.app.state.bot
+    if not bot or not bot.is_connected:
+        return HTMLResponse("<span style='color:var(--danger);font-weight:600;'>Bot 未连接</span>")
+
+    await bot._sync_groups()
+    db = request.app.state.db
+    groups = await db.list_all_groups()
+    return templates.TemplateResponse(request, "groups.html", {
+        "groups": groups,
+    })
+
+
 @router.post("/groups/{group_id}/toggle")
 async def toggle_group(request: Request, group_id: int):
     redirect = _require_auth(request)
