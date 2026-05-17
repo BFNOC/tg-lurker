@@ -25,8 +25,29 @@ CREATE TABLE IF NOT EXISTS summaries (
     group_name TEXT NOT NULL,
     message_count INTEGER NOT NULL,
     summary_text TEXT NOT NULL,
+    last_accessed_at INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
     UNIQUE(biz_date, group_id)
+);
+
+CREATE TABLE IF NOT EXISTS context_windows (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    summary_id INTEGER NOT NULL,
+    group_id INTEGER NOT NULL,
+    ref_message_id INTEGER NOT NULL,
+    FOREIGN KEY (summary_id) REFERENCES summaries(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS context_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    window_id INTEGER NOT NULL,
+    group_id INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    sender_name TEXT,
+    text TEXT NOT NULL,
+    timestamp INTEGER NOT NULL,
+    FOREIGN KEY (window_id) REFERENCES context_windows(id) ON DELETE CASCADE,
+    UNIQUE(window_id, message_id)
 );
 
 CREATE TABLE IF NOT EXISTS monitored_groups (
@@ -61,7 +82,11 @@ CREATE TABLE IF NOT EXISTS alerts (
 
 CREATE INDEX IF NOT EXISTS idx_messages_biz_date ON messages(biz_date);
 CREATE INDEX IF NOT EXISTS idx_messages_group_date ON messages(group_id, biz_date);
+CREATE INDEX IF NOT EXISTS idx_messages_group_msgid ON messages(group_id, message_id);
 CREATE INDEX IF NOT EXISTS idx_summaries_biz_date ON summaries(biz_date);
+CREATE INDEX IF NOT EXISTS idx_summaries_accessed ON summaries(last_accessed_at);
+CREATE INDEX IF NOT EXISTS idx_context_windows_summary ON context_windows(summary_id);
+CREATE INDEX IF NOT EXISTS idx_context_messages_window ON context_messages(window_id);
 CREATE INDEX IF NOT EXISTS idx_alerts_created ON alerts(created_at);
 """
 
@@ -76,8 +101,19 @@ class Database:
         self._conn = await aiosqlite.connect(self._path)
         await self._conn.execute("PRAGMA journal_mode=WAL")
         await self._conn.execute("PRAGMA busy_timeout=5000")
+        await self._conn.execute("PRAGMA foreign_keys=ON")
         await self._conn.executescript(_SCHEMA)
         await self._conn.commit()
+        await self._migrate()
+
+    async def _migrate(self) -> None:
+        try:
+            await self.conn.execute(
+                "ALTER TABLE summaries ADD COLUMN last_accessed_at INTEGER NOT NULL DEFAULT 0"
+            )
+            await self.conn.commit()
+        except Exception:
+            pass
 
     async def close(self) -> None:
         if self._conn:
@@ -218,27 +254,28 @@ class Database:
         group_name: str,
         message_count: int,
         summary_text: str,
-    ) -> None:
-        await self.conn.execute(
+    ) -> int:
+        cursor = await self.conn.execute(
             """INSERT OR REPLACE INTO summaries
                (biz_date, group_id, group_name, message_count, summary_text)
                VALUES (?, ?, ?, ?, ?)""",
             (biz_date, group_id, group_name, message_count, summary_text),
         )
         await self.conn.commit()
+        return cursor.lastrowid
 
     async def get_summaries_by_date(
         self, biz_date: str, group_id: int | None = None
     ) -> list[dict]:
         if group_id is not None:
             cursor = await self.conn.execute(
-                """SELECT biz_date, group_id, group_name, message_count, summary_text, created_at
+                """SELECT id, biz_date, group_id, group_name, message_count, summary_text, created_at
                    FROM summaries WHERE biz_date = ? AND group_id = ?""",
                 (biz_date, group_id),
             )
         else:
             cursor = await self.conn.execute(
-                """SELECT biz_date, group_id, group_name, message_count, summary_text, created_at
+                """SELECT id, biz_date, group_id, group_name, message_count, summary_text, created_at
                    FROM summaries WHERE biz_date = ?
                    ORDER BY group_id""",
                 (biz_date,),
@@ -246,12 +283,13 @@ class Database:
         rows = await cursor.fetchall()
         return [
             {
-                "biz_date": r[0],
-                "group_id": r[1],
-                "group_name": r[2],
-                "message_count": r[3],
-                "summary_text": r[4],
-                "created_at": r[5],
+                "id": r[0],
+                "biz_date": r[1],
+                "group_id": r[2],
+                "group_name": r[3],
+                "message_count": r[4],
+                "summary_text": r[5],
+                "created_at": r[6],
             }
             for r in rows
         ]
@@ -395,3 +433,132 @@ class Database:
         cursor = await self.conn.execute("SELECT COUNT(*) FROM alerts")
         row = await cursor.fetchone()
         return row[0] if row else 0
+
+    # --- context windows ---
+
+    async def insert_context_window(self, summary_id: int, group_id: int, ref_message_id: int) -> int:
+        cursor = await self.conn.execute(
+            "INSERT INTO context_windows (summary_id, group_id, ref_message_id) VALUES (?, ?, ?)",
+            (summary_id, group_id, ref_message_id),
+        )
+        await self.conn.commit()
+        return cursor.lastrowid
+
+    async def insert_context_messages(self, window_id: int, messages: list[dict]) -> None:
+        await self.conn.executemany(
+            """INSERT OR IGNORE INTO context_messages
+               (window_id, group_id, message_id, sender_name, text, timestamp)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            [
+                (window_id, m["group_id"], m["message_id"], m.get("sender_name"), m["text"], m["timestamp"])
+                for m in messages
+            ],
+        )
+        await self.conn.commit()
+
+    async def get_context_windows_by_summary(self, summary_id: int) -> list[dict]:
+        cursor = await self.conn.execute(
+            "SELECT id, group_id, ref_message_id FROM context_windows WHERE summary_id = ?",
+            (summary_id,),
+        )
+        rows = await cursor.fetchall()
+        return [{"id": r[0], "group_id": r[1], "ref_message_id": r[2]} for r in rows]
+
+    async def get_context_messages(self, window_id: int) -> list[dict]:
+        cursor = await self.conn.execute(
+            """SELECT message_id, sender_name, text, timestamp
+               FROM context_messages WHERE window_id = ?
+               ORDER BY message_id ASC""",
+            (window_id,),
+        )
+        rows = await cursor.fetchall()
+        return [
+            {"message_id": r[0], "sender_name": r[1], "text": r[2], "timestamp": r[3]}
+            for r in rows
+        ]
+
+    async def touch_summary(self, summary_id: int) -> None:
+        import time
+        await self.conn.execute(
+            "UPDATE summaries SET last_accessed_at = ? WHERE id = ?",
+            (int(time.time()), summary_id),
+        )
+        await self.conn.commit()
+
+    async def get_messages_around(self, group_id: int, center_message_id: int, radius: int) -> list[dict]:
+        cursor = await self.conn.execute(
+            """SELECT group_id, message_id, sender_name, text, timestamp
+               FROM messages
+               WHERE group_id = ? AND message_id BETWEEN ? AND ?
+               ORDER BY message_id ASC""",
+            (group_id, center_message_id - radius, center_message_id + radius),
+        )
+        rows = await cursor.fetchall()
+        return [
+            {"group_id": r[0], "message_id": r[1], "sender_name": r[2], "text": r[3], "timestamp": r[4]}
+            for r in rows
+        ]
+
+    async def delete_messages_except_context(
+        self, biz_date: str, before_timestamp: int | None, keep_message_ids: set[int], group_id: int
+    ) -> int:
+        if not keep_message_ids:
+            if before_timestamp is not None:
+                cursor = await self.conn.execute(
+                    "DELETE FROM messages WHERE biz_date = ? AND group_id = ? AND timestamp <= ?",
+                    (biz_date, group_id, before_timestamp),
+                )
+            else:
+                cursor = await self.conn.execute(
+                    "DELETE FROM messages WHERE biz_date = ? AND group_id = ?",
+                    (biz_date, group_id),
+                )
+        else:
+            placeholders = ",".join("?" * len(keep_message_ids))
+            if before_timestamp is not None:
+                cursor = await self.conn.execute(
+                    f"DELETE FROM messages WHERE biz_date = ? AND group_id = ? AND timestamp <= ? AND message_id NOT IN ({placeholders})",
+                    (biz_date, group_id, before_timestamp, *keep_message_ids),
+                )
+            else:
+                cursor = await self.conn.execute(
+                    f"DELETE FROM messages WHERE biz_date = ? AND group_id = ? AND message_id NOT IN ({placeholders})",
+                    (biz_date, group_id, *keep_message_ids),
+                )
+        await self.conn.commit()
+        return cursor.rowcount
+
+    async def get_context_storage_count(self) -> int:
+        cursor = await self.conn.execute("SELECT COUNT(*) FROM context_messages")
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+
+    async def cleanup_lru_contexts(self, max_rows: int) -> int:
+        total = await self.get_context_storage_count()
+        if total <= max_rows:
+            return 0
+        deleted = 0
+        while total > max_rows:
+            cursor = await self.conn.execute(
+                """SELECT id FROM summaries
+                   WHERE id IN (SELECT DISTINCT summary_id FROM context_windows)
+                   ORDER BY last_accessed_at ASC LIMIT 1"""
+            )
+            row = await cursor.fetchone()
+            if not row:
+                break
+            summary_id = row[0]
+            count_cursor = await self.conn.execute(
+                """SELECT COUNT(*) FROM context_messages
+                   WHERE window_id IN (SELECT id FROM context_windows WHERE summary_id = ?)""",
+                (summary_id,),
+            )
+            count_row = await count_cursor.fetchone()
+            batch_size = count_row[0] if count_row else 0
+            await self.conn.execute(
+                "DELETE FROM context_windows WHERE summary_id = ?", (summary_id,)
+            )
+            await self.conn.commit()
+            total -= batch_size
+            deleted += batch_size
+        return deleted
