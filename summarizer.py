@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -19,10 +20,14 @@ DEFAULT_SYSTEM_PROMPT = """你是一个群聊摘要助手。请根据以下群�
 - 提取主要话题和关键讨论
 - 列出重要链接（如有）
 - 忽略无意义的闲聊和重复内容
-- 保持简洁，每个话题 1-2 句话"""
+- 保持简洁，每个话题 1-2 句话
+- 在摘要中引用关键消息时，使用 [m:消息ID] 格式标注来源
+- 每个话题至少引用 1 条代表性消息的 ID"""
 
 DEFAULT_USER_PROMPT = """群聊消息：
 {messages}"""
+
+_REF_PATTERN = re.compile(r"\[m:(\d+)\]")
 
 
 class Summarizer:
@@ -76,9 +81,7 @@ class Summarizer:
             model=model,
             input=input_messages,
         )
-        result = response.output_text or ""
-        logger.info(f"Responses API result length: {len(result)}, preview: {result[:100]}")
-        return result
+        return response.output_text or ""
 
     async def _call_llm(self, system_prompt: str, user_prompt: str) -> str:
         base_url, api_key, model, api_format = await self._reload_llm_config()
@@ -104,7 +107,8 @@ class Summarizer:
         lines = []
         for msg in reversed(messages):
             sender = msg["sender_name"] or "Unknown"
-            line = f"[{sender}]: {msg['text']}"
+            ts = datetime.fromtimestamp(msg["timestamp"], self._tz).strftime("%H:%M")
+            line = f"[m:{msg['message_id']}][{ts}][{sender}]: {msg['text']}"
             lines.insert(0, line)
 
         text = "\n".join(lines)
@@ -119,7 +123,11 @@ class Summarizer:
             text = candidate
         return text
 
-    async def summarize_group(self, biz_date: str, group_id: int, group_name: str) -> str | None:
+    @staticmethod
+    def parse_referenced_ids(text: str) -> list[int]:
+        return [int(m) for m in _REF_PATTERN.findall(text)]
+
+    async def summarize_group(self, biz_date: str, group_id: int, group_name: str) -> tuple[str, list[int]] | None:
         messages = await self._db.get_messages_by_date(biz_date, group_id)
         if not messages:
             return None
@@ -132,7 +140,11 @@ class Summarizer:
 
         try:
             summary = await self._call_llm(system_prompt, user_prompt)
-            return summary.strip() if summary else None
+            if not summary:
+                return None
+            summary = summary.strip()
+            ref_ids = self.parse_referenced_ids(summary)
+            return (summary, ref_ids)
         except Exception as e:
             logger.error(f"LLM failed for group {group_name} ({group_id}): {e}")
             return None
@@ -151,34 +163,47 @@ class Summarizer:
         if group_ids is not None:
             active_groups = [g for g in active_groups if g["group_id"] in group_ids]
 
+        context_radius = int(await self._db.get_setting("context_radius", "30"))
         results: dict = {"date": biz_date, "groups": [], "failed": [], "snapshot_ts": snapshot_ts}
 
         for group in active_groups:
             group_id = group["group_id"]
             group_name = group["group_name"]
 
-            summary = await self.summarize_group(biz_date, group_id, group_name)
+            result = await self.summarize_group(biz_date, group_id, group_name)
 
-            if summary is None:
+            if result is None:
                 messages = await self._db.get_messages_by_date(biz_date, group_id)
                 if messages:
                     results["failed"].append(group_name)
                 continue
 
+            summary, ref_ids = result
             messages = await self._db.get_messages_by_date(biz_date, group_id)
             msg_count = len(messages)
 
-            await self._db.insert_summary(
+            summary_id = await self._db.insert_summary(
                 biz_date=biz_date,
                 group_id=group_id,
                 group_name=group_name,
                 message_count=msg_count,
                 summary_text=summary,
             )
+
+            keep_ids: set[int] = set()
+            for ref_id in ref_ids:
+                window_msgs = await self._db.get_messages_around(group_id, ref_id, context_radius)
+                if window_msgs:
+                    window_id = await self._db.insert_context_window(summary_id, group_id, ref_id)
+                    await self._db.insert_context_messages(window_id, window_msgs)
+                    keep_ids.update(m["message_id"] for m in window_msgs)
+
             results["groups"].append({
                 "name": group_name,
                 "count": msg_count,
                 "summary": summary,
+                "group_id": group_id,
+                "keep_ids": keep_ids,
             })
 
             await asyncio.sleep(1)
@@ -202,6 +227,11 @@ class Summarizer:
         deleted = await self._db.delete_expired_summaries(cutoff_date)
         if deleted:
             logger.info(f"Cleaned {deleted} expired summaries before {cutoff_date}")
+
+        max_rows = int(await self._db.get_setting("context_max_rows", "50000"))
+        cleaned = await self._db.cleanup_lru_contexts(max_rows)
+        if cleaned:
+            logger.info(f"Cleaned {cleaned} LRU context messages")
 
     def format_report(self, results: dict) -> str:
         lines = [f"📋 每日群聊摘要 ({results['date']})", ""]
