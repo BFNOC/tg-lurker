@@ -7,7 +7,8 @@ IMAGE_NAME="tg-lurker"
 FULL_IMAGE="${DOCKER_USER}/${IMAGE_NAME}"
 
 # === 版本信息 ===
-VERSION="${1:-$(date +%Y%m%d)}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+VERSION="${1:-$(cat "${SCRIPT_DIR}/../VERSION" 2>/dev/null || date +%Y%m%d)}"
 COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BRANCH=$(git branch --show-current 2>/dev/null || echo "main")
 
