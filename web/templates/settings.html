@@ -44,7 +44,7 @@
                 <option value="true" {% if settings.tg_push_enabled == "true" %}selected{% endif %}>已启用</option>
                 <option value="false" {% if settings.tg_push_enabled == "false" %}selected{% endif %}>已禁用</option>
             </select>
-            <div class="form-hint">摘要生成后是否自动推送到对应的 Telegram 群组</div>
+            <div class="form-hint">摘要生成后是否通过 Telegram 私聊推送给你（OWNER_ID）</div>
         </div>
 
         <div class="section-divider"></div>
