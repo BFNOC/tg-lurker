@@ -43,4 +43,8 @@ def create_app(config: Config, db: Database, bot=None, scheduler=None) -> FastAP
 
     templates.env.globals["csrf_token_value"] = lambda request: getattr(request.state, "csrf_token", "")
 
+    import os
+    templates.env.globals["version"] = os.environ.get("APP_VERSION", "dev")
+    templates.env.globals["commit_short"] = os.environ.get("APP_COMMIT", "")
+
     return app

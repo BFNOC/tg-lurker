@@ -675,6 +675,9 @@
 
     <div class="container">
         {% block content %}{% endblock %}
+        <footer style="margin-top:48px;padding-top:16px;border-top:1px solid var(--border);text-align:center;font-size:11px;color:var(--text-muted);">
+            tg-lurker {{ version or "dev" }} · {{ commit_short or "" }}
+        </footer>
     </div>
 
     <div id="toast-container"></div>
