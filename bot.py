@@ -73,13 +73,15 @@ class Bot:
 
         if not await self._client.is_user_authorized():
             import sys
-            logger.error(
-                "Session not authorized. Run interactively first:\n"
-                "  docker compose run --rm tg-lurker python main.py\n"
-                "Then enter your phone number and verification code."
-            )
-            await self._client.disconnect()
-            sys.exit(1)
+            if not sys.stdin.isatty():
+                logger.error(
+                    "Session not authorized. Run interactively first:\n"
+                    "  docker compose run -it --rm tg-lurker python main.py\n"
+                    "Then enter your phone number and verification code."
+                )
+                await self._client.disconnect()
+                sys.exit(1)
+            await self._client.start()
 
         await self._client.start()
         self._running = True
