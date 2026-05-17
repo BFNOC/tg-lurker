@@ -47,4 +47,13 @@ def create_app(config: Config, db: Database, bot=None, scheduler=None) -> FastAP
     templates.env.globals["version"] = os.environ.get("APP_VERSION", "dev")
     templates.env.globals["commit_short"] = os.environ.get("APP_COMMIT", "")
 
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    tz = ZoneInfo(config.tz)
+
+    def timestamp_to_time(ts):
+        return datetime.fromtimestamp(ts, tz).strftime("%H:%M")
+
+    templates.env.filters["timestamp_to_time"] = timestamp_to_time
+
     return app

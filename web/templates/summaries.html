@@ -148,12 +148,29 @@ document.querySelectorAll('.summary-text').forEach(el => {
     const windowMap = {};
     windows.forEach(w => { windowMap[w.ref_message_id] = w.id; });
 
-    el.innerHTML = el.textContent.replace(/\[m:(\d+)\]/g, (match, id) => {
-        const wid = windowMap[parseInt(id)];
-        if (wid) {
-            return `<button class="ctx-btn" onclick="openCtx(${wid}, ${groupId}, ${id})">ctx</button>`;
+    const text = el.textContent;
+    const parts = text.split(/(\[m:\d+\])/g);
+    el.innerHTML = '';
+    parts.forEach(part => {
+        const match = part.match(/^\[m:(\d+)\]$/);
+        if (match) {
+            const id = parseInt(match[1]);
+            const wid = windowMap[id];
+            if (wid) {
+                const btn = document.createElement('button');
+                btn.className = 'ctx-btn';
+                btn.textContent = 'ctx';
+                btn.onclick = () => openCtx(wid, groupId, id);
+                el.appendChild(btn);
+            } else {
+                const span = document.createElement('span');
+                span.style.cssText = 'font-size:11px;color:var(--text-muted);';
+                span.textContent = part;
+                el.appendChild(span);
+            }
+        } else {
+            el.appendChild(document.createTextNode(part));
         }
-        return `<span style="font-size:11px;color:var(--text-muted);">[m:${id}]</span>`;
     });
 });
 
@@ -178,22 +195,24 @@ function renderCtxMessages(messages, refId) {
         body.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:40px;">无上下文消息</p>';
         return;
     }
-    let html = '';
+    body.innerHTML = '';
     messages.forEach(m => {
         const isRef = m.message_id == refId;
         const time = new Date(m.timestamp * 1000).toLocaleTimeString('zh-CN', {hour:'2-digit', minute:'2-digit'});
-        html += '<div class="ctx-msg ' + (isRef ? 'ctx-msg-ref' : '') + '">' +
-            '<span class="ctx-msg-time">' + time + '</span>' +
-            '<span class="ctx-msg-sender">' + (m.sender_name || 'Unknown') + '</span>' +
-            escapeHtml(m.text) + '</div>';
+        const div = document.createElement('div');
+        div.className = 'ctx-msg' + (isRef ? ' ctx-msg-ref' : '');
+        const timeSpan = document.createElement('span');
+        timeSpan.className = 'ctx-msg-time';
+        timeSpan.textContent = time;
+        const senderSpan = document.createElement('span');
+        senderSpan.className = 'ctx-msg-sender';
+        senderSpan.textContent = m.sender_name || 'Unknown';
+        const textNode = document.createTextNode(m.text);
+        div.appendChild(timeSpan);
+        div.appendChild(senderSpan);
+        div.appendChild(textNode);
+        body.appendChild(div);
     });
-    body.innerHTML = html;
-}
-
-function escapeHtml(t) {
-    const d = document.createElement('div');
-    d.textContent = t;
-    return d.innerHTML;
 }
 
 function closeCtxModal() {

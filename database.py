@@ -486,14 +486,25 @@ class Database:
         await self.conn.commit()
 
     async def get_messages_around(self, group_id: int, center_message_id: int, radius: int) -> list[dict]:
-        cursor = await self.conn.execute(
+        before_cursor = await self.conn.execute(
             """SELECT group_id, message_id, sender_name, text, timestamp
                FROM messages
-               WHERE group_id = ? AND message_id BETWEEN ? AND ?
-               ORDER BY message_id ASC""",
-            (group_id, center_message_id - radius, center_message_id + radius),
+               WHERE group_id = ? AND message_id < ?
+               ORDER BY message_id DESC LIMIT ?""",
+            (group_id, center_message_id, radius),
         )
-        rows = await cursor.fetchall()
+        before = await before_cursor.fetchall()
+
+        after_cursor = await self.conn.execute(
+            """SELECT group_id, message_id, sender_name, text, timestamp
+               FROM messages
+               WHERE group_id = ? AND message_id >= ?
+               ORDER BY message_id ASC LIMIT ?""",
+            (group_id, center_message_id, radius + 1),
+        )
+        after = await after_cursor.fetchall()
+
+        rows = list(reversed(before)) + list(after)
         return [
             {"group_id": r[0], "message_id": r[1], "sender_name": r[2], "text": r[3], "timestamp": r[4]}
             for r in rows

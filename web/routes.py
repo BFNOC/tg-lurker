@@ -481,10 +481,16 @@ async def fetch_telegram_context(request: Request):
     form = await request.form()
     group_id = int(form.get("group_id", "0"))
     message_id = int(form.get("message_id", "0"))
-    radius = int(form.get("radius", "30"))
+    radius = min(int(form.get("radius", "30")), 100)
 
     if not group_id or not message_id:
         return JSONResponse({"error": "Missing group_id or message_id"}, status_code=400)
+
+    db = request.app.state.db
+    active_groups = await db.get_active_groups()
+    active_ids = {g["group_id"] for g in active_groups}
+    if group_id not in active_ids:
+        return JSONResponse({"error": "Group not monitored"}, status_code=403)
 
     try:
         messages = await bot.fetch_messages_around(group_id, message_id, radius)

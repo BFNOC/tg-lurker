@@ -89,6 +89,7 @@
             <div class="msg-left">
                 <span class="msg-sender">{{ m.sender_name or "?" }}</span>
                 <span class="msg-group-tag">{{ m.group_name }}</span>
+                <span style="font-size:11px;color:var(--text-muted);margin-left:8px;">{{ m.timestamp | timestamp_to_time }}</span>
             </div>
             <div class="msg-body">{{ m.text[:200] }}{% if m.text|length > 200 %}...{% endif %}</div>
             {% if m.sender_id %}

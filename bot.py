@@ -245,9 +245,13 @@ class Bot:
         logger.info("Bot stopped")
 
     async def fetch_messages_around(self, group_id: int, message_id: int, radius: int) -> list[dict]:
-        entity = await self._client.get_entity(group_id)
-        ids = list(range(max(1, message_id - radius), message_id + radius + 1))
-        messages = await self._client.get_messages(entity, ids=ids)
+        try:
+            entity = await self._client.get_entity(group_id)
+            ids = list(range(max(1, message_id - radius), message_id + radius + 1))
+            messages = await self._client.get_messages(entity, ids=ids)
+        except FloodWaitError as e:
+            logger.warning(f"FloodWait {e.seconds}s on fetch_messages_around")
+            raise RuntimeError(f"Rate limited, retry after {e.seconds}s")
         result = []
         for msg in messages:
             if msg and msg.text:
