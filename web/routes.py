@@ -237,6 +237,7 @@ async def settings_page(request: Request):
         "system_prompt": await db.get_setting("system_prompt", ""),
         "user_prompt": await db.get_setting("user_prompt", ""),
         "ad_keywords": await db.get_setting("ad_keywords", ""),
+        "alert_keywords": await db.get_setting("alert_keywords", ""),
     }
 
     return templates.TemplateResponse(request, "settings.html", {
@@ -259,13 +260,13 @@ async def save_settings(request: Request):
 
     for key in ("summary_cron", "summary_retention_days", "tg_push_enabled",
                 "llm_base_url", "llm_api_key", "llm_model", "llm_api_format",
-                "system_prompt", "user_prompt", "ad_keywords"):
+                "system_prompt", "user_prompt", "ad_keywords", "alert_keywords"):
         value = form.get(key, "")
         if key == "llm_api_key" and value.startswith("••••"):
             continue
         if value:
             await db.set_setting(key, str(value))
-        elif key in ("system_prompt", "user_prompt", "ad_keywords"):
+        elif key in ("system_prompt", "user_prompt", "ad_keywords", "alert_keywords"):
             await db.set_setting(key, "")
 
     config = request.app.state.config
@@ -283,6 +284,7 @@ async def save_settings(request: Request):
         "system_prompt": await db.get_setting("system_prompt", ""),
         "user_prompt": await db.get_setting("user_prompt", ""),
         "ad_keywords": await db.get_setting("ad_keywords", ""),
+        "alert_keywords": await db.get_setting("alert_keywords", ""),
     }
 
     return templates.TemplateResponse(request, "settings.html", {

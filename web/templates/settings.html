@@ -99,6 +99,22 @@
         </div>
     </div>
 
+    <div class="card animate-fade-in" style="animation-delay: 0.35s;">
+        <div class="card-title">
+            <svg style="width:20px;height:20px;" aria-hidden="true" role="img"><use href="#icon-alert"></use></svg>
+            实时告警
+        </div>
+        <p style="margin-bottom:16px;font-size:13px;color:var(--text-muted);">
+            当<strong>群主或管理员</strong>发送的消息命中以下关键词时，立即通过 Telegram 私聊推送通知。每行一个关键词，命中任意一个即触发。
+        </p>
+
+        <div class="form-group" style="margin-bottom:0;">
+            <label for="alert_keywords">告警关键词（每行一个）</label>
+            <textarea id="alert_keywords" name="alert_keywords" rows="5" placeholder="抽奖&#10;福利&#10;奖品&#10;口令&#10;免费领&#10;赠送">{{ settings.alert_keywords }}</textarea>
+            <div class="form-hint">仅管理员/群主发送的消息才会触发告警，普通成员不会。适合抽奖、福利活动通知。</div>
+        </div>
+    </div>
+
     <div class="card animate-fade-in" style="animation-delay: 0.4s;">
         <div class="card-title">
             <svg style="width:20px;height:20px;" aria-hidden="true" role="img"><use href="#icon-summaries"></use></svg>

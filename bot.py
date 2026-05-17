@@ -23,6 +23,8 @@ class Bot:
         self._client: TelegramClient | None = None
         self._tz = ZoneInfo(config.tz)
         self._running = False
+        self._alert_keywords: list[str] = []
+        self._alert_callback = None
 
     @property
     def client(self) -> TelegramClient:
@@ -66,6 +68,7 @@ class Bot:
 
         await self._sync_groups()
         await self._rebuild_dedup()
+        await self._reload_alert_keywords()
         await self._catch_up()
         self._register_handler()
 
@@ -87,6 +90,57 @@ class Bot:
             self._dedup.set_blocklist(keywords)
 
         logger.info(f"Dedup rebuilt with {len(texts)} messages, {len(self._dedup._keyword_blocklist)} keywords")
+
+    async def _reload_alert_keywords(self) -> None:
+        raw = await self._db.get_setting("alert_keywords", "")
+        self._alert_keywords = [k.strip().lower() for k in raw.split("\n") if k.strip()]
+        logger.info(f"Alert keywords loaded: {len(self._alert_keywords)}")
+
+    def set_alert_callback(self, callback) -> None:
+        self._alert_callback = callback
+
+    async def _check_alert(self, message, group_name: str, text: str) -> None:
+        if not self._alert_keywords or not self._alert_callback:
+            return
+
+        text_lower = text.lower()
+        matched = [kw for kw in self._alert_keywords if kw in text_lower]
+        if not matched:
+            return
+
+        is_admin = False
+        try:
+            chat = await message.get_chat()
+            if hasattr(chat, "creator") and chat.creator:
+                if message.sender_id == getattr(chat, "creator_id", None):
+                    is_admin = True
+            if not is_admin:
+                from telethon.tl.types import ChannelParticipantAdmin, ChannelParticipantCreator
+                participant = await self._client.get_permissions(message.chat_id, message.sender_id)
+                if participant.is_admin or participant.is_creator:
+                    is_admin = True
+        except Exception:
+            pass
+
+        if not is_admin:
+            return
+
+        sender_name = ""
+        if message.sender:
+            sender_name = getattr(message.sender, "first_name", "") or str(message.sender_id)
+
+        alert_text = (
+            f"🔔 实时告警\n\n"
+            f"群组: {group_name}\n"
+            f"发送者: {sender_name} (管理员)\n"
+            f"关键词: {', '.join(matched)}\n\n"
+            f"消息内容:\n{text[:500]}"
+        )
+
+        try:
+            await self._alert_callback(alert_text)
+        except Exception as e:
+            logger.error(f"Alert send failed: {e}")
 
     async def _catch_up(self) -> None:
         active_groups = await self._db.get_active_groups()
@@ -126,6 +180,8 @@ class Bot:
         text = message.text.strip()
         if not text:
             return
+
+        await self._check_alert(message, group_name, text)
 
         if message.sender_id and await self._db.is_sender_blocked(message.sender_id):
             return
