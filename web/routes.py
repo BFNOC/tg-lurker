@@ -338,7 +338,25 @@ async def save_settings(request: Request):
     })
 
 
-@router.post("/summary/trigger")
+@router.post("/settings/test-push")
+async def test_push(request: Request):
+    redirect = _require_auth(request)
+    if redirect:
+        return redirect
+    csrf_err = await _require_csrf(request)
+    if csrf_err:
+        return csrf_err
+
+    bot = request.app.state.bot
+    if not bot or not bot.is_connected:
+        return HTMLResponse("<span style='color:var(--danger);font-weight:600;'>Bot 未连接</span>")
+
+    config = request.app.state.config
+    try:
+        await bot.client.send_message(config.owner_id, "🔔 tg-lurker 推送测试\n\n如果你看到这条消息，说明推送功能正常工作。")
+        return HTMLResponse("<span style='color:var(--success);font-weight:600;'>已发送，请检查 Telegram</span>")
+    except Exception as e:
+        return HTMLResponse(f"<span style='color:var(--danger);font-weight:600;'>发送失败: {e}</span>")
 async def trigger_summary(request: Request):
     redirect = _require_auth(request)
     if redirect:

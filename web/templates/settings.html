@@ -45,6 +45,11 @@
                 <option value="false" {% if settings.tg_push_enabled == "false" %}selected{% endif %}>已禁用</option>
             </select>
             <div class="form-hint">摘要生成后是否通过 Telegram 私聊推送给你（OWNER_ID）</div>
+            <button type="button" class="btn btn-sm btn-ghost" style="margin-top:8px;"
+                    hx-post="/settings/test-push" hx-target="#push-test-result" hx-swap="innerHTML">
+                发送测试消息
+            </button>
+            <span id="push-test-result" style="font-size:13px;margin-left:12px;"></span>
         </div>
 
         <div class="section-divider"></div>
