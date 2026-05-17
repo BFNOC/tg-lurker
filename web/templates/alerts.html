@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% block title_suffix %} - 告警{% endblock %}
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>告警历史</h1>
+        <p>管理员/群主触发的实时告警记录（共 {{ total }} 条）</p>
+    </div>
+</div>
+
+{% if alerts %}
+<div class="card animate-fade-in">
+    {% for a in alerts %}
+    <div class="alert-item">
+        <div class="alert-header">
+            <div class="alert-meta">
+                <span class="alert-group">{{ a.group_name }}</span>
+                <span class="alert-sender">{{ a.sender_name }}</span>
+                <span class="alert-keywords">{{ a.keywords }}</span>
+            </div>
+            <span class="alert-time">{{ a.created_at }}</span>
+        </div>
+        <div class="alert-body">{{ a.message_text[:300] }}{% if a.message_text|length > 300 %}...{% endif %}</div>
+    </div>
+    {% endfor %}
+
+    {% if total_pages > 1 %}
+    <div style="display:flex;justify-content:center;gap:6px;margin-top:20px;padding-top:16px;border-top:1px solid var(--border);">
+        {% if page > 1 %}
+        <a href="/alerts?page={{ page - 1 }}" class="btn btn-sm btn-ghost">上一页</a>
+        {% endif %}
+        <span style="font-size:13px;color:var(--text-muted);padding:6px 12px;">{{ page }} / {{ total_pages }}</span>
+        {% if page < total_pages %}
+        <a href="/alerts?page={{ page + 1 }}" class="btn btn-sm btn-ghost">下一页</a>
+        {% endif %}
+    </div>
+    {% endif %}
+</div>
+{% else %}
+<div class="card animate-fade-in">
+    <div class="empty-state">
+        <svg aria-hidden="true" role="img"><use href="#icon-alert"></use></svg>
+        <h3>暂无告警记录</h3>
+        <p>当管理员/群主发送的消息命中告警关键词时，记录会出现在这里。请先在设置页配置告警关键词。</p>
+    </div>
+</div>
+{% endif %}
+
+<style>
+    .alert-item {
+        padding: 16px 0;
+        border-bottom: 1px solid var(--border);
+    }
+    .alert-item:last-child { border-bottom: none; }
+    .alert-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
+    }
+    .alert-meta {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+    }
+    .alert-group {
+        font-weight: 700;
+        font-size: 14px;
+        color: var(--text);
+    }
+    .alert-sender {
+        font-size: 12px;
+        color: var(--accent);
+        font-weight: 600;
+    }
+    .alert-keywords {
+        font-size: 11px;
+        background: var(--warning-bg);
+        color: var(--warning);
+        padding: 2px 8px;
+        border-radius: 100px;
+        font-weight: 700;
+    }
+    .alert-time {
+        font-size: 12px;
+        color: var(--text-muted);
+        font-variant-numeric: tabular-nums;
+    }
+    .alert-body {
+        font-size: 14px;
+        line-height: 1.6;
+        color: var(--text-secondary);
+        white-space: pre-wrap;
+        word-break: break-word;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        padding: 12px 16px;
+    }
+</style>
+
+<script>
+    document.querySelectorAll('.alert-time').forEach(el => {
+        const ts = parseInt(el.textContent);
+        if (!isNaN(ts)) {
+            const d = new Date(ts * 1000);
+            el.textContent = d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+        }
+    });
+</script>
+{% endblock %}

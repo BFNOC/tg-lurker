@@ -136,6 +136,14 @@ class Bot:
 
         try:
             await self._alert_callback(alert_text)
+            await self._db.insert_alert(
+                group_id=message.chat_id,
+                group_name=group_name,
+                sender_id=message.sender_id,
+                sender_name=sender_name,
+                keywords=", ".join(matched),
+                message_text=text[:500],
+            )
         except Exception as e:
             logger.error(f"Alert send failed: {e}")
 

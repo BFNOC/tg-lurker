@@ -48,9 +48,21 @@ CREATE TABLE IF NOT EXISTS blocked_senders (
     blocked_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
 );
 
+CREATE TABLE IF NOT EXISTS alerts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id INTEGER NOT NULL,
+    group_name TEXT NOT NULL,
+    sender_id INTEGER,
+    sender_name TEXT,
+    keywords TEXT NOT NULL,
+    message_text TEXT NOT NULL,
+    created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_messages_biz_date ON messages(biz_date);
 CREATE INDEX IF NOT EXISTS idx_messages_group_date ON messages(group_id, biz_date);
 CREATE INDEX IF NOT EXISTS idx_summaries_biz_date ON summaries(biz_date);
+CREATE INDEX IF NOT EXISTS idx_alerts_created ON alerts(created_at);
 """
 
 
@@ -341,3 +353,45 @@ class Database:
             {"sender_id": r[0], "sender_name": r[1], "reason": r[2], "blocked_at": r[3]}
             for r in rows
         ]
+
+    # --- alerts ---
+
+    async def insert_alert(
+        self,
+        group_id: int,
+        group_name: str,
+        sender_id: int | None,
+        sender_name: str,
+        keywords: str,
+        message_text: str,
+    ) -> None:
+        await self.conn.execute(
+            """INSERT INTO alerts (group_id, group_name, sender_id, sender_name, keywords, message_text)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (group_id, group_name, sender_id, sender_name, keywords, message_text),
+        )
+        await self.conn.commit()
+
+    async def get_alerts(self, limit: int = 50, offset: int = 0) -> list[dict]:
+        cursor = await self.conn.execute(
+            """SELECT id, group_name, sender_name, keywords, message_text, created_at
+               FROM alerts ORDER BY created_at DESC LIMIT ? OFFSET ?""",
+            (limit, offset),
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "id": r[0],
+                "group_name": r[1],
+                "sender_name": r[2],
+                "keywords": r[3],
+                "message_text": r[4],
+                "created_at": r[5],
+            }
+            for r in rows
+        ]
+
+    async def get_alert_count(self) -> int:
+        cursor = await self.conn.execute("SELECT COUNT(*) FROM alerts")
+        row = await cursor.fetchone()
+        return row[0] if row else 0

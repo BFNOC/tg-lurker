@@ -44,6 +44,28 @@ async def help_page(request: Request):
     return templates.TemplateResponse(request, "help.html", {})
 
 
+@router.get("/alerts")
+async def alerts_page(request: Request):
+    redirect = _require_auth(request)
+    if redirect:
+        return redirect
+
+    db = request.app.state.db
+    page = int(request.query_params.get("page", "1"))
+    per_page = 30
+
+    total = await db.get_alert_count()
+    alerts = await db.get_alerts(limit=per_page, offset=(page - 1) * per_page)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+
+    return templates.TemplateResponse(request, "alerts.html", {
+        "alerts": alerts,
+        "total": total,
+        "page": page,
+        "total_pages": total_pages,
+    })
+
+
 @router.post("/messages/block-sender")
 async def block_sender(request: Request):
     redirect = _require_auth(request)
