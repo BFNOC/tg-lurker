@@ -2,7 +2,7 @@
 set -e
 
 # === 配置 ===
-DOCKER_USER="${DOCKER_USER:-your-username}"
+DOCKER_USER="${DOCKER_USER:-hfxmci}"
 IMAGE_NAME="tg-lurker"
 FULL_IMAGE="${DOCKER_USER}/${IMAGE_NAME}"
 
