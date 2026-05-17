@@ -346,3 +346,100 @@ async def trigger_summary(request: Request):
     except Exception as e:
         import html as html_mod
         return HTMLResponse(f"<p style='color:var(--danger)'>Error: {html_mod.escape(str(e))}</p>")
+
+
+@router.post("/summary/debug-curl")
+async def debug_curl(request: Request):
+    redirect = _require_auth(request)
+    if redirect:
+        return redirect
+    csrf_err = await _require_csrf(request)
+    if csrf_err:
+        return csrf_err
+
+    import html as html_mod
+    import json
+
+    db = request.app.state.db
+    config = request.app.state.config
+    tz = ZoneInfo(config.tz)
+
+    form = await request.form()
+    selected = form.getlist("group_ids")
+    target_date = form.get("biz_date", None) or datetime.now(tz).strftime("%Y-%m-%d")
+
+    base_url = await db.get_setting("llm_base_url", config.llm_base_url)
+    api_key = await db.get_setting("llm_api_key", config.llm_api_key)
+    model = await db.get_setting("llm_model", config.llm_model)
+    api_format = await db.get_setting("llm_api_format", config.llm_api_format)
+    system_prompt = await db.get_setting("system_prompt", "")
+    user_prompt_tpl = await db.get_setting("user_prompt", "")
+
+    if not system_prompt:
+        from summarizer import DEFAULT_SYSTEM_PROMPT
+        system_prompt = DEFAULT_SYSTEM_PROMPT
+    if not user_prompt_tpl:
+        from summarizer import DEFAULT_USER_PROMPT
+        user_prompt_tpl = DEFAULT_USER_PROMPT
+
+    active_groups = await db.get_active_groups()
+    if selected:
+        gids = [int(g) for g in selected]
+        active_groups = [g for g in active_groups if g["group_id"] in gids]
+
+    if not active_groups:
+        return HTMLResponse("<p>No active groups</p>")
+
+    group = active_groups[0]
+    messages = await db.get_messages_by_date(target_date, group["group_id"])
+    if not messages:
+        return HTMLResponse(f"<p>No messages for {group['group_name']} on {target_date}</p>")
+
+    from summarizer import Summarizer
+    s = Summarizer(config, db)
+    msg_text = s._truncate_messages(messages)
+    user_prompt = user_prompt_tpl.format(messages=msg_text)
+
+    masked_key = api_key[:8] + "..." + api_key[-4:] if len(api_key) > 12 else "sk-***"
+
+    if api_format == "responses":
+        body = {
+            "model": model,
+            "input": [
+                {"role": "developer", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        }
+        url = f"{base_url.rstrip('/')}/responses"
+    else:
+        body = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": 0.3,
+            "max_tokens": 2000,
+        }
+        url = f"{base_url.rstrip('/')}/chat/completions"
+
+    body_json = json.dumps(body, ensure_ascii=False, indent=2)
+    curl_cmd = (
+        f"curl -X POST '{url}' \\\n"
+        f"  -H 'Content-Type: application/json' \\\n"
+        f"  -H 'Authorization: Bearer {masked_key}' \\\n"
+        f"  -d '{body_json}'"
+    )
+
+    info = (
+        f"API Format: {api_format}\n"
+        f"Model: {model}\n"
+        f"URL: {url}\n"
+        f"Messages count: {len(messages)}\n"
+        f"Truncated text length: {len(msg_text)} chars\n"
+        f"Group: {group['group_name']}\n\n"
+        f"--- curl command (replace key with real one) ---\n\n"
+        f"{curl_cmd}"
+    )
+
+    return HTMLResponse(f"<pre style='font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-all;'>{html_mod.escape(info)}</pre>")

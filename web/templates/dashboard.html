@@ -167,6 +167,12 @@
             </div>
         </button>
 
+        <button type="submit" class="btn btn-ghost" style="margin-left:12px;"
+                hx-post="/summary/debug-curl" hx-target="#summary-result"
+                onclick="event.preventDefault(); htmx.ajax('POST', '/summary/debug-curl', {target:'#summary-result', source:this.closest('form')});">
+            显示 curl
+        </button>
+
         <div id="summary-progress" style="display:none; align-items:center; gap:10px; margin-top:16px; padding:14px 18px; background:var(--accent-light); border:1px solid var(--accent); border-radius:var(--radius-sm); font-size:14px; font-weight:600; color:var(--accent);">
             <div class="spinner" style="border-color:var(--accent-light); border-top-color:var(--accent);"></div>
             <span>正在调用 LLM 生成摘要，请稍候（通常需要 10-30 秒）...</span>
