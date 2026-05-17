@@ -103,6 +103,9 @@ class Bot:
         if not self._alert_keywords or not self._alert_callback:
             return
 
+        if not message.sender_id:
+            return
+
         text_lower = text.lower()
         matched = [kw for kw in self._alert_keywords if kw in text_lower]
         if not matched:
@@ -110,23 +113,17 @@ class Bot:
 
         is_admin = False
         try:
-            chat = await message.get_chat()
-            if hasattr(chat, "creator") and chat.creator:
-                if message.sender_id == getattr(chat, "creator_id", None):
-                    is_admin = True
-            if not is_admin:
-                from telethon.tl.types import ChannelParticipantAdmin, ChannelParticipantCreator
-                participant = await self._client.get_permissions(message.chat_id, message.sender_id)
-                if participant.is_admin or participant.is_creator:
-                    is_admin = True
-        except Exception:
-            pass
+            perms = await self._client.get_permissions(message.chat_id, message.sender_id)
+            is_admin = perms.is_admin or perms.is_creator
+        except Exception as e:
+            logger.debug(f"Permission check failed for {message.sender_id}: {e}")
+            return
 
         if not is_admin:
             return
 
-        sender_name = ""
-        if message.sender:
+        sender_name = getattr(message, "post_author", "") or ""
+        if not sender_name and message.sender:
             sender_name = getattr(message.sender, "first_name", "") or str(message.sender_id)
 
         alert_text = (
@@ -154,7 +151,7 @@ class Bot:
                 async for msg in self._client.iter_messages(
                     entity, min_id=last_id, reverse=True
                 ):
-                    await self._process_message(msg, group["group_name"])
+                    await self._process_message(msg, group["group_name"], is_catchup=True)
             except Exception as e:
                 logger.warning(f"Catch-up failed for group {group_id}: {e}")
         logger.info("Catch-up complete")
@@ -171,9 +168,9 @@ class Bot:
             if chat_id not in active_ids:
                 return
             group_name = getattr(chat, "title", None) or str(chat_id)
-            await self._process_message(event.message, group_name)
+            await self._process_message(event.message, group_name, is_catchup=False)
 
-    async def _process_message(self, message, group_name: str) -> None:
+    async def _process_message(self, message, group_name: str, is_catchup: bool = False) -> None:
         if not message.text:
             return
 
@@ -181,13 +178,14 @@ class Bot:
         if not text:
             return
 
-        await self._check_alert(message, group_name, text)
-
         if message.sender_id and await self._db.is_sender_blocked(message.sender_id):
             return
 
         if not self._dedup.check_and_add(text):
             return
+
+        if not is_catchup:
+            await self._check_alert(message, group_name, text)
 
         biz_date = message.date.astimezone(self._tz).strftime("%Y-%m-%d")
         sender_id = message.sender_id

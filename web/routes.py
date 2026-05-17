@@ -269,6 +269,10 @@ async def save_settings(request: Request):
         elif key in ("system_prompt", "user_prompt", "ad_keywords", "alert_keywords"):
             await db.set_setting(key, "")
 
+    bot = request.app.state.bot
+    if bot and hasattr(bot, "_reload_alert_keywords"):
+        await bot._reload_alert_keywords()
+
     config = request.app.state.config
     raw_key = await db.get_setting("llm_api_key", config.llm_api_key)
     masked_key = "••••••••" + raw_key[-4:] if len(raw_key) > 4 else "••••••••"
