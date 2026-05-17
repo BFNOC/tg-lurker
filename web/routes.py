@@ -357,6 +357,9 @@ async def test_push(request: Request):
         return HTMLResponse("<span style='color:var(--success);font-weight:600;'>已发送，请检查 Telegram</span>")
     except Exception as e:
         return HTMLResponse(f"<span style='color:var(--danger);font-weight:600;'>发送失败: {e}</span>")
+
+
+@router.post("/summary/trigger")
 async def trigger_summary(request: Request):
     redirect = _require_auth(request)
     if redirect:
