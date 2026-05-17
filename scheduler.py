@@ -75,8 +75,8 @@ class SummaryScheduler:
                 biz_date = results["date"]
                 snapshot_ts = results.get("snapshot_ts")
                 for g in results["groups"]:
-                    if g.get("no_ref"):
-                        logger.warning(f"Skipping message cleanup for {g['name']}: no context references")
+                    if g.get("skip_clear"):
+                        logger.warning(f"Skipping message cleanup for {g['name']}: no valid context references")
                         continue
                     keep_ids = g.get("keep_ids", set())
                     await self._summarizer._db.delete_messages_except_context(

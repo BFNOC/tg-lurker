@@ -481,7 +481,10 @@ async def fetch_telegram_context(request: Request):
     form = await request.form()
     group_id = int(form.get("group_id", "0"))
     message_id = int(form.get("message_id", "0"))
-    radius = min(int(form.get("radius", "30")), 100)
+    try:
+        radius = max(1, min(100, int(form.get("radius", "30"))))
+    except (ValueError, TypeError):
+        return JSONResponse({"error": "Invalid radius"}, status_code=400)
 
     if not group_id or not message_id:
         return JSONResponse({"error": "Missing group_id or message_id"}, status_code=400)

@@ -166,7 +166,7 @@ class Summarizer:
         if group_ids is not None:
             active_groups = [g for g in active_groups if g["group_id"] in group_ids]
 
-        context_radius = int(await self._db.get_setting("context_radius", "30"))
+        context_radius = max(5, min(100, int(await self._db.get_setting("context_radius", "30"))))
         results: dict = {"date": biz_date, "groups": [], "failed": [], "snapshot_ts": snapshot_ts}
 
         for group in active_groups:
@@ -195,8 +195,9 @@ class Summarizer:
 
             keep_ids: set[int] = set()
             seen_refs: set[int] = set()
+            valid_msg_ids = {m["message_id"] for m in messages}
             for ref_id in ref_ids:
-                if ref_id in seen_refs:
+                if ref_id in seen_refs or ref_id not in valid_msg_ids:
                     continue
                 seen_refs.add(ref_id)
                 window_msgs = await self._db.get_messages_around(group_id, ref_id, context_radius)
@@ -205,14 +206,13 @@ class Summarizer:
                     await self._db.insert_context_messages(window_id, window_msgs)
                     keep_ids.update(m["message_id"] for m in window_msgs)
 
-            no_ref = len(ref_ids) == 0
             results["groups"].append({
                 "name": group_name,
                 "count": msg_count,
                 "summary": summary,
                 "group_id": group_id,
                 "keep_ids": keep_ids,
-                "no_ref": no_ref,
+                "skip_clear": not keep_ids,
             })
 
             await asyncio.sleep(1)
