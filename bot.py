@@ -6,6 +6,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from telethon import TelegramClient, events
+from telethon.errors import FloodWaitError
 from telethon.tl.types import Channel, Chat
 
 from config import Config
@@ -23,8 +24,10 @@ class Bot:
         self._client: TelegramClient | None = None
         self._tz = ZoneInfo(config.tz)
         self._running = False
+        self._ready = asyncio.Event()
         self._alert_keywords: list[str] = []
         self._alert_callback = None
+        self._admin_cache: dict[tuple[int, int], tuple[bool, float]] = {}
 
     @property
     def client(self) -> TelegramClient:
@@ -60,10 +63,13 @@ class Bot:
             connection_retries=10,
             retry_delay=5,
             flood_sleep_threshold=60,
+            catch_up=True,
         )
 
-        if not await self._client.connect():
-            logger.info("Connected to Telegram servers")
+        self._register_handler()
+
+        await self._client.connect()
+        logger.info("Connected to Telegram servers")
 
         if not await self._client.is_user_authorized():
             import sys
@@ -82,8 +88,12 @@ class Bot:
         await self._sync_groups()
         await self._rebuild_dedup()
         await self._reload_alert_keywords()
-        await self._catch_up()
-        self._register_handler()
+
+        self._ready.set()
+        logger.info("Initialization complete, processing messages")
+
+        await self._client.catch_up()
+        logger.info("Catch-up dispatched")
 
     async def _sync_groups(self) -> None:
         async for dialog in self._client.iter_dialogs():
@@ -124,13 +134,25 @@ class Bot:
         if not matched:
             return
 
-        is_admin = False
-        try:
-            perms = await self._client.get_permissions(message.chat_id, message.sender_id)
-            is_admin = perms.is_admin or perms.is_creator
-        except Exception as e:
-            logger.debug(f"Permission check failed for {message.sender_id}: {e}")
-            return
+        import time
+        cache_key = (message.chat_id, message.sender_id)
+        cached = self._admin_cache.get(cache_key)
+        now = time.time()
+
+        if cached and (now - cached[1]) < 300:
+            is_admin = cached[0]
+        else:
+            is_admin = False
+            try:
+                perms = await self._client.get_permissions(message.chat_id, message.sender_id)
+                is_admin = perms.is_admin or perms.is_creator
+            except FloodWaitError as e:
+                logger.warning(f"FloodWait {e.seconds}s on permission check, skipping alert")
+                return
+            except Exception as e:
+                logger.debug(f"Permission check failed for {message.sender_id}: {e}")
+                return
+            self._admin_cache[cache_key] = (is_admin, now)
 
         if not is_admin:
             return
@@ -160,26 +182,10 @@ class Bot:
         except Exception as e:
             logger.error(f"Alert send failed: {e}")
 
-    async def _catch_up(self) -> None:
-        active_groups = await self._db.get_active_groups()
-        for group in active_groups:
-            group_id = group["group_id"]
-            last_id = await self._db.get_last_message_id(group_id)
-            if last_id is None:
-                continue
-            try:
-                entity = await self._client.get_entity(group_id)
-                async for msg in self._client.iter_messages(
-                    entity, min_id=last_id, reverse=True
-                ):
-                    await self._process_message(msg, group["group_name"], is_catchup=True)
-            except Exception as e:
-                logger.warning(f"Catch-up failed for group {group_id}: {e}")
-        logger.info("Catch-up complete")
-
     def _register_handler(self) -> None:
         @self._client.on(events.NewMessage)
         async def handler(event):
+            await self._ready.wait()
             chat = await event.get_chat()
             if not isinstance(chat, (Channel, Chat)):
                 return
@@ -189,9 +195,9 @@ class Bot:
             if chat_id not in active_ids:
                 return
             group_name = getattr(chat, "title", None) or str(chat_id)
-            await self._process_message(event.message, group_name, is_catchup=False)
+            await self._process_message(event.message, group_name)
 
-    async def _process_message(self, message, group_name: str, is_catchup: bool = False) -> None:
+    async def _process_message(self, message, group_name: str) -> None:
         if not message.text:
             return
 
@@ -205,8 +211,7 @@ class Bot:
         if not self._dedup.check_and_add(text):
             return
 
-        if not is_catchup:
-            await self._check_alert(message, group_name, text)
+        await self._check_alert(message, group_name, text)
 
         biz_date = message.date.astimezone(self._tz).strftime("%Y-%m-%d")
         sender_id = message.sender_id
@@ -237,5 +242,4 @@ class Bot:
         logger.info("Shutting down bot...")
         if self._client:
             await self._client.disconnect()
-        await self._db.close()
         logger.info("Bot stopped")

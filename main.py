@@ -57,8 +57,7 @@ async def main() -> None:
         logger.info("Shutting down...")
         scheduler.stop()
         server.should_exit = True
-        if bot.is_connected:
-            await bot.client.disconnect()
+        await bot.stop()
         await db.close()
         logger.info("Shutdown complete")
 
