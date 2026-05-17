@@ -57,7 +57,7 @@ class Summarizer:
     async def _call_chat(self, client: AsyncOpenAI, model: str, system_prompt: str, user_prompt: str) -> str:
         messages = []
         if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "developer", "content": system_prompt})
         messages.append({"role": "user", "content": user_prompt})
         response = await client.chat.completions.create(
             model=model,
@@ -68,10 +68,10 @@ class Summarizer:
         return response.choices[0].message.content or ""
 
     async def _call_responses(self, client: AsyncOpenAI, model: str, system_prompt: str, user_prompt: str) -> str:
-        input_text = f"{system_prompt}\n\n{user_prompt}" if system_prompt else user_prompt
         response = await client.responses.create(
             model=model,
-            input=input_text,
+            instructions=system_prompt or None,
+            input=user_prompt,
         )
         return response.output_text or ""
 

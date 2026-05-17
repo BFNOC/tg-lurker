@@ -119,7 +119,9 @@
         生成消息摘要。可选择日期和特定群组。
     </p>
 
-    <form hx-post="/summary/trigger" hx-target="#summary-result" hx-indicator="#summary-spinner">
+    <form hx-post="/summary/trigger" hx-target="#summary-result" hx-indicator="#summary-spinner"
+          hx-on::before-request="this.querySelector('.btn').disabled=true; document.getElementById('summary-progress').style.display='flex';"
+          hx-on::after-request="this.querySelector('.btn').disabled=false; document.getElementById('summary-progress').style.display='none';">
         <div class="form-group">
             <label>目标日期</label>
             <select name="biz_date">
@@ -140,14 +142,14 @@
                     <button type="button" class="btn-link" onclick="clearAllGroups()">清除</button>
                 </div>
             </div>
-            
+
             <div class="chip-container" role="listbox" aria-label="群组选择" aria-multiselectable="true">
                 {% for g in groups %}
-                <div class="chip" 
-                     data-id="{{ g.group_id }}" 
+                <div class="chip"
+                     data-id="{{ g.group_id }}"
                      onclick="toggleGroupChip(this, '{{ g.group_id }}')"
                      onkeydown="if(event.key === ' ' || event.key === 'Enter') { event.preventDefault(); toggleGroupChip(this, '{{ g.group_id }}'); }"
-                     role="option" 
+                     role="option"
                      aria-selected="false"
                      tabindex="0">
                     {{ g.group_name }}
@@ -156,7 +158,7 @@
             </div>
             <div id="hidden-group-inputs"></div>
         </div>
-        
+
         <button type="submit" class="btn">
             <span class="btn-text">立即生成</span>
             <div id="summary-spinner" class="htmx-indicator">
@@ -164,6 +166,11 @@
                 <span>生成中...</span>
             </div>
         </button>
+
+        <div id="summary-progress" style="display:none; align-items:center; gap:10px; margin-top:16px; padding:14px 18px; background:var(--accent-light); border:1px solid var(--accent); border-radius:var(--radius-sm); font-size:14px; font-weight:600; color:var(--accent);">
+            <div class="spinner" style="border-color:var(--accent-light); border-top-color:var(--accent);"></div>
+            <span>正在调用 LLM 生成摘要，请稍候（通常需要 10-30 秒）...</span>
+        </div>
     </form>
 
     <div id="summary-result" style="margin-top:20px;"></div>
