@@ -1,0 +1,17 @@
+.git
+.gitignore
+.env
+.env.*
+data/
+*.session
+*.session-journal
+openspec/
+__pycache__
+*.pyc
+*.pyo
+.venv
+venv
+.idea
+.vscode
+*.md
+!requirements.txt
