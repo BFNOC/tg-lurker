@@ -293,6 +293,16 @@ async def save_settings(request: Request):
         value = form.get(key, "")
         if key == "llm_api_key" and value.startswith("••••"):
             continue
+        if key == "context_radius":
+            try:
+                value = str(max(5, min(100, int(value or "30"))))
+            except (ValueError, TypeError):
+                value = "30"
+        if key == "context_max_rows":
+            try:
+                value = str(max(1000, min(500000, int(value or "50000"))))
+            except (ValueError, TypeError):
+                value = "50000"
         if value:
             await db.set_setting(key, str(value))
         elif key in ("system_prompt", "user_prompt", "ad_keywords", "alert_keywords"):

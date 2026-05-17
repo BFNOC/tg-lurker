@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import logging
+
 import aiosqlite
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS messages (
@@ -35,7 +39,8 @@ CREATE TABLE IF NOT EXISTS context_windows (
     summary_id INTEGER NOT NULL,
     group_id INTEGER NOT NULL,
     ref_message_id INTEGER NOT NULL,
-    FOREIGN KEY (summary_id) REFERENCES summaries(id) ON DELETE CASCADE
+    FOREIGN KEY (summary_id) REFERENCES summaries(id) ON DELETE CASCADE,
+    UNIQUE(summary_id, ref_message_id)
 );
 
 CREATE TABLE IF NOT EXISTS context_messages (
@@ -112,8 +117,9 @@ class Database:
                 "ALTER TABLE summaries ADD COLUMN last_accessed_at INTEGER NOT NULL DEFAULT 0"
             )
             await self.conn.commit()
-        except Exception:
-            pass
+        except Exception as e:
+            if "duplicate column" not in str(e).lower():
+                logger.warning(f"Migration warning: {e}")
 
     async def close(self) -> None:
         if self._conn:
