@@ -479,8 +479,11 @@ async def fetch_telegram_context(request: Request):
         return JSONResponse({"error": "Bot not connected"}, status_code=503)
 
     form = await request.form()
-    group_id = int(form.get("group_id", "0"))
-    message_id = int(form.get("message_id", "0"))
+    try:
+        group_id = int(form.get("group_id", "0"))
+        message_id = int(form.get("message_id", "0"))
+    except (ValueError, TypeError):
+        return JSONResponse({"error": "Invalid parameters"}, status_code=400)
     try:
         radius = max(1, min(100, int(form.get("radius", "30"))))
     except (ValueError, TypeError):

@@ -166,7 +166,10 @@ class Summarizer:
         if group_ids is not None:
             active_groups = [g for g in active_groups if g["group_id"] in group_ids]
 
-        context_radius = max(5, min(100, int(await self._db.get_setting("context_radius", "30"))))
+        try:
+            context_radius = max(5, min(100, int(await self._db.get_setting("context_radius", "30"))))
+        except (ValueError, TypeError):
+            context_radius = 30
         results: dict = {"date": biz_date, "groups": [], "failed": [], "snapshot_ts": snapshot_ts}
 
         for group in active_groups:
