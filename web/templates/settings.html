@@ -46,6 +46,20 @@
             </select>
             <div class="form-hint">摘要生成后是否自动推送到对应的 Telegram 群组</div>
         </div>
+
+        <div class="section-divider"></div>
+
+        <div class="form-group">
+            <label for="context_radius">上下文保留半径</label>
+            <input type="number" id="context_radius" name="context_radius" value="{{ settings.context_radius }}" min="5" max="100">
+            <div class="form-hint">摘要引用消息前后保留的消息条数（默认 30）</div>
+        </div>
+
+        <div class="form-group">
+            <label for="context_max_rows">上下文存储上限</label>
+            <input type="number" id="context_max_rows" name="context_max_rows" value="{{ settings.context_max_rows }}" min="1000" max="500000">
+            <div class="form-hint">上下文消息最大存储行数，超出后按最久未访问清理（默认 50000）</div>
+        </div>
     </div>
 
     <div class="card animate-fade-in" style="animation-delay: 0.2s;">

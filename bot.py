@@ -243,3 +243,21 @@ class Bot:
         if self._client:
             await self._client.disconnect()
         logger.info("Bot stopped")
+
+    async def fetch_messages_around(self, group_id: int, message_id: int, radius: int) -> list[dict]:
+        entity = await self._client.get_entity(group_id)
+        ids = list(range(max(1, message_id - radius), message_id + radius + 1))
+        messages = await self._client.get_messages(entity, ids=ids)
+        result = []
+        for msg in messages:
+            if msg and msg.text:
+                sender = ""
+                if msg.sender:
+                    sender = getattr(msg.sender, "first_name", "") or str(msg.sender_id)
+                result.append({
+                    "message_id": msg.id,
+                    "sender_name": sender,
+                    "text": msg.text,
+                    "timestamp": int(msg.date.timestamp()),
+                })
+        return sorted(result, key=lambda m: m["message_id"])

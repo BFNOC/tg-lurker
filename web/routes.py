@@ -4,7 +4,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from web import templates
 from web.auth import is_authenticated, get_csrf_token, verify_csrf
@@ -229,6 +229,10 @@ async def summaries_page(request: Request):
     available_dates = await db.get_available_dates()
     summaries = await db.get_summaries_by_date(date)
 
+    for s in summaries:
+        s["context_windows"] = await db.get_context_windows_by_summary(s["id"])
+        await db.touch_summary(s["id"])
+
     return templates.TemplateResponse(request, "summaries.html", {
         "summaries": summaries,
         "selected_date": date,
@@ -260,6 +264,8 @@ async def settings_page(request: Request):
         "user_prompt": await db.get_setting("user_prompt", ""),
         "ad_keywords": await db.get_setting("ad_keywords", ""),
         "alert_keywords": await db.get_setting("alert_keywords", ""),
+        "context_radius": await db.get_setting("context_radius", "30"),
+        "context_max_rows": await db.get_setting("context_max_rows", "50000"),
     }
 
     return templates.TemplateResponse(request, "settings.html", {
@@ -282,7 +288,8 @@ async def save_settings(request: Request):
 
     for key in ("summary_cron", "summary_retention_days", "tg_push_enabled",
                 "llm_base_url", "llm_api_key", "llm_model", "llm_api_format",
-                "system_prompt", "user_prompt", "ad_keywords", "alert_keywords"):
+                "system_prompt", "user_prompt", "ad_keywords", "alert_keywords",
+                "context_radius", "context_max_rows"):
         value = form.get(key, "")
         if key == "llm_api_key" and value.startswith("••••"):
             continue
@@ -311,6 +318,8 @@ async def save_settings(request: Request):
         "user_prompt": await db.get_setting("user_prompt", ""),
         "ad_keywords": await db.get_setting("ad_keywords", ""),
         "alert_keywords": await db.get_setting("alert_keywords", ""),
+        "context_radius": await db.get_setting("context_radius", "30"),
+        "context_max_rows": await db.get_setting("context_max_rows", "50000"),
     }
 
     return templates.TemplateResponse(request, "settings.html", {
@@ -443,3 +452,42 @@ async def debug_curl(request: Request):
     )
 
     return HTMLResponse(f"<pre style='font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-all;'>{html_mod.escape(info)}</pre>")
+
+
+@router.get("/api/context/{window_id}")
+async def get_context(request: Request, window_id: int):
+    redirect = _require_auth(request)
+    if redirect:
+        return redirect
+
+    db = request.app.state.db
+    messages = await db.get_context_messages(window_id)
+    return JSONResponse({"messages": messages})
+
+
+@router.post("/api/context/fetch-telegram")
+async def fetch_telegram_context(request: Request):
+    redirect = _require_auth(request)
+    if redirect:
+        return redirect
+    csrf_err = await _require_csrf(request)
+    if csrf_err:
+        return csrf_err
+
+    bot = request.app.state.bot
+    if not bot or not bot.is_connected:
+        return JSONResponse({"error": "Bot not connected"}, status_code=503)
+
+    form = await request.form()
+    group_id = int(form.get("group_id", "0"))
+    message_id = int(form.get("message_id", "0"))
+    radius = int(form.get("radius", "30"))
+
+    if not group_id or not message_id:
+        return JSONResponse({"error": "Missing group_id or message_id"}, status_code=400)
+
+    try:
+        messages = await bot.fetch_messages_around(group_id, message_id, radius)
+        return JSONResponse({"messages": messages})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
