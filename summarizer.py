@@ -76,7 +76,9 @@ class Summarizer:
             model=model,
             input=input_messages,
         )
-        return response.output_text or ""
+        result = response.output_text or ""
+        logger.info(f"Responses API result length: {len(result)}, preview: {result[:100]}")
+        return result
 
     async def _call_llm(self, system_prompt: str, user_prompt: str) -> str:
         base_url, api_key, model, api_format = await self._reload_llm_config()
@@ -124,8 +126,8 @@ class Summarizer:
 
         msg_text = self._truncate_messages(messages)
 
-        system_prompt = await self._db.get_setting("system_prompt", DEFAULT_SYSTEM_PROMPT)
-        user_prompt_tpl = await self._db.get_setting("user_prompt", DEFAULT_USER_PROMPT)
+        system_prompt = await self._db.get_setting("system_prompt", "") or DEFAULT_SYSTEM_PROMPT
+        user_prompt_tpl = await self._db.get_setting("user_prompt", "") or DEFAULT_USER_PROMPT
         user_prompt = user_prompt_tpl.format(messages=msg_text)
 
         try:
