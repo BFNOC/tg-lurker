@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import io
+import re
+import zipfile
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 
 from web import templates
 from web.auth import is_authenticated, get_csrf_token, verify_csrf
@@ -26,6 +29,83 @@ async def _require_csrf(request: Request):
     if not await verify_csrf(request):
         return HTMLResponse("<p style='color:var(--danger)'>CSRF token invalid</p>", status_code=403)
     return None
+
+
+def _current_biz_date(request: Request) -> str:
+    config = request.app.state.config
+    return datetime.now(ZoneInfo(config.tz)).strftime("%Y-%m-%d")
+
+
+def _parse_optional_group_id(request: Request) -> int | None:
+    group_id = request.query_params.get("group_id", "")
+    return int(group_id) if group_id else None
+
+
+def _safe_filename_part(name: str) -> str:
+    safe_name = re.sub(r"[/\\<>:\"|?*\x00-\x1f]", "_", name).strip("_")
+    return safe_name or "summary"
+
+
+def _summary_filename(summary: dict) -> str:
+    safe_name = _safe_filename_part(summary["group_name"])
+    return f"{summary['biz_date']}-{summary['group_id']}-{safe_name}.md"
+
+
+def _download_headers(filename: str) -> dict:
+    from urllib.parse import quote
+    encoded = quote(filename, safe="")
+    return {"Content-Disposition": f"attachment; filename*=UTF-8''{encoded}"}
+
+
+def _escape_markdown_table_cell(value) -> str:
+    text = "" if value is None else str(value)
+    return text.replace("|", r"\|").replace("\r\n", "<br>").replace("\n", "<br>").replace("\r", "<br>")
+
+
+def _render_summary_markdown(summary: dict, tz: ZoneInfo) -> str:
+    created_at = datetime.fromtimestamp(summary["created_at"], tz).strftime("%Y-%m-%d %H:%M:%S")
+    lines = [
+        f"# {summary['group_name']} — {summary['biz_date']}",
+        "",
+        f"> 消息数: {summary['message_count']} | 生成时间: {created_at}",
+        "",
+        "## 摘要",
+        "",
+        summary["summary_text"],
+        "",
+        "## 上下文引用",
+        "",
+    ]
+
+    if not summary["windows"]:
+        lines.append("暂无上下文引用")
+        lines.append("")
+        return "\n".join(lines)
+
+    for window in summary["windows"]:
+        lines.extend([
+            f"### [m:{window['ref_message_id']}]",
+            "",
+            "| 时间 | 发送者 | 内容 |",
+            "|------|--------|------|",
+        ])
+        for message in window["messages"]:
+            msg_time = datetime.fromtimestamp(message["timestamp"], tz).strftime("%H:%M")
+            sender_name = _escape_markdown_table_cell(message.get("sender_name") or "Unknown")
+            text = _escape_markdown_table_cell(message.get("text") or "")
+            lines.append(f"| {msg_time} | {sender_name} | {text} |")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def _markdown_download_response(summary: dict, tz: ZoneInfo) -> StreamingResponse:
+    markdown = _render_summary_markdown(summary, tz).encode("utf-8")
+    return StreamingResponse(
+        io.BytesIO(markdown),
+        media_type="text/markdown; charset=utf-8",
+        headers=_download_headers(_summary_filename(summary)),
+    )
 
 
 @router.get("/")
@@ -182,6 +262,69 @@ async def dashboard(request: Request):
     })
 
 
+@router.get("/stats")
+async def stats_page(request: Request):
+    redirect = _require_auth(request)
+    if redirect:
+        return redirect
+    return templates.TemplateResponse(request, "stats.html", {})
+
+
+@router.get("/api/stats/today-groups")
+async def api_today_groups(request: Request):
+    redirect = _require_auth(request)
+    if redirect:
+        return redirect
+
+    db = request.app.state.db
+    groups = await db.get_today_stats_by_group(_current_biz_date(request))
+    return JSONResponse(groups)
+
+
+@router.get("/api/stats/hourly")
+async def api_hourly_stats(request: Request):
+    redirect = _require_auth(request)
+    if redirect:
+        return redirect
+
+    try:
+        group_id = _parse_optional_group_id(request)
+    except (ValueError, TypeError):
+        return JSONResponse({"error": "Invalid group_id"}, status_code=400)
+
+    db = request.app.state.db
+    config = request.app.state.config
+    data = await db.get_today_hourly_distribution(_current_biz_date(request), config.tz, group_id)
+    return JSONResponse(data)
+
+
+@router.get("/api/stats/top-senders")
+async def api_top_senders(request: Request):
+    redirect = _require_auth(request)
+    if redirect:
+        return redirect
+
+    try:
+        group_id = _parse_optional_group_id(request)
+    except (ValueError, TypeError):
+        return JSONResponse({"error": "Invalid group_id"}, status_code=400)
+
+    db = request.app.state.db
+    data = await db.get_today_top_senders(_current_biz_date(request), group_id)
+    return JSONResponse(data)
+
+
+@router.get("/api/stats/daily-trend")
+async def api_daily_trend(request: Request):
+    redirect = _require_auth(request)
+    if redirect:
+        return redirect
+
+    db = request.app.state.db
+    data = await db.get_historical_daily_counts()
+    return JSONResponse(data)
+
+
 @router.get("/groups")
 async def groups_page(request: Request):
     redirect = _require_auth(request)
@@ -234,6 +377,56 @@ async def toggle_group(request: Request, group_id: int):
     return templates.TemplateResponse(request, "groups.html", {
         "groups": groups,
     }, headers={"HX-Trigger": "groupsUpdated"})
+
+
+@router.get("/summaries/export")
+async def export_summaries(request: Request):
+    redirect = _require_auth(request)
+    if redirect:
+        return redirect
+
+    db = request.app.state.db
+    config = request.app.state.config
+    tz = ZoneInfo(config.tz)
+
+    date = request.query_params.get("date", datetime.now(tz).strftime("%Y-%m-%d"))
+    try:
+        group_id = _parse_optional_group_id(request)
+    except (ValueError, TypeError):
+        return HTMLResponse("<p>Invalid group_id</p>", status_code=400)
+
+    summaries = await db.get_summaries_by_date_for_export(date, group_id)
+    if not summaries:
+        return HTMLResponse("<p>No summaries found</p>", status_code=404)
+    if len(summaries) == 1:
+        return _markdown_download_response(summaries[0], tz)
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for summary in summaries:
+            zf.writestr(_summary_filename(summary), _render_summary_markdown(summary, tz))
+    zip_buffer.seek(0)
+
+    return StreamingResponse(
+        zip_buffer,
+        media_type="application/zip",
+        headers=_download_headers(f"{date}-summaries.zip"),
+    )
+
+
+@router.get("/summaries/{summary_id}/export")
+async def export_summary(request: Request, summary_id: int):
+    redirect = _require_auth(request)
+    if redirect:
+        return redirect
+
+    db = request.app.state.db
+    config = request.app.state.config
+    summary = await db.get_summary_with_context(summary_id)
+    if not summary:
+        return HTMLResponse("<p>Summary not found</p>", status_code=404)
+
+    return _markdown_download_response(summary, ZoneInfo(config.tz))
 
 
 @router.get("/summaries")

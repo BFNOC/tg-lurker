@@ -1,0 +1,281 @@
+{% extends "base.html" %}
+{% block title_suffix %} - 统计{% endblock %}
+{% block content %}
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+<style>
+    .stats-toolbar {
+        display: flex;
+        justify-content: flex-end;
+        margin-bottom: 20px;
+    }
+    .stats-toolbar .form-group {
+        width: min(100%, 320px);
+        margin-bottom: 0;
+    }
+    .chart-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 20px;
+    }
+    .chart-box {
+        height: 320px;
+        min-width: 0;
+    }
+    .chart-card {
+        min-width: 0;
+    }
+    .chart-empty {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 320px;
+        color: var(--text-muted);
+        font-size: 14px;
+        font-weight: 600;
+    }
+    @media (max-width: 768px) {
+        .stats-toolbar { justify-content: stretch; }
+        .stats-toolbar .form-group { width: 100%; }
+        .chart-grid { grid-template-columns: 1fr; }
+    }
+</style>
+
+<div class="page-header">
+    <div>
+        <h1>统计</h1>
+        <p>今日消息分布与历史摘要趋势</p>
+    </div>
+</div>
+
+<div class="stats-toolbar">
+    <div class="form-group">
+        <label for="group-filter">群组筛选</label>
+        <select id="group-filter">
+            <option value="">全部群组</option>
+        </select>
+    </div>
+</div>
+
+<div class="chart-grid">
+    <div class="card chart-card animate-fade-in">
+        <div class="card-title">每日消息趋势</div>
+        <div id="daily-chart" class="chart-box"></div>
+    </div>
+    <div class="card chart-card animate-fade-in" style="animation-delay:0.05s;">
+        <div class="card-title">今日群组消息数</div>
+        <div id="group-chart" class="chart-box"></div>
+    </div>
+    <div class="card chart-card animate-fade-in" style="animation-delay:0.1s;">
+        <div class="card-title">今日小时分布</div>
+        <div id="hourly-chart" class="chart-box"></div>
+    </div>
+    <div class="card chart-card animate-fade-in" style="animation-delay:0.15s;">
+        <div class="card-title">今日 Top 发言人</div>
+        <div id="sender-chart" class="chart-box"></div>
+    </div>
+</div>
+
+<script>
+const charts = {
+    daily: echarts.init(document.getElementById('daily-chart')),
+    groups: echarts.init(document.getElementById('group-chart')),
+    hourly: echarts.init(document.getElementById('hourly-chart')),
+    senders: echarts.init(document.getElementById('sender-chart')),
+};
+
+function cssVar(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+function chartTheme() {
+    return {
+        text: cssVar('--text'),
+        secondary: cssVar('--text-secondary'),
+        muted: cssVar('--text-muted'),
+        border: cssVar('--border'),
+        accent: cssVar('--accent'),
+        success: cssVar('--success'),
+        warning: cssVar('--warning'),
+    };
+}
+
+function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+async function fetchJson(url) {
+    const response = await fetch(url, {headers: {'Accept': 'application/json'}});
+    if (!response.ok) {
+        throw new Error('请求失败: ' + response.status);
+    }
+    return response.json();
+}
+
+function emptyChart(chart, text) {
+    const theme = chartTheme();
+    chart.setOption({
+        title: {text, left: 'center', top: 'middle', textStyle: {color: theme.muted, fontSize: 14}},
+        xAxis: {show: false},
+        yAxis: {show: false},
+        series: [],
+    }, true);
+}
+
+function baseGrid() {
+    return {left: 44, right: 20, top: 28, bottom: 44, containLabel: true};
+}
+
+function renderDaily(data) {
+    if (!data.length) return emptyChart(charts.daily, '暂无历史摘要数据');
+    const theme = chartTheme();
+    const ordered = [...data].reverse();
+    charts.daily.setOption({
+        color: [theme.accent],
+        tooltip: {trigger: 'axis', formatter: params => `${escapeHtml(params[0].axisValue)}<br/>消息数: ${params[0].data}`},
+        grid: baseGrid(),
+        xAxis: {
+            type: 'category',
+            data: ordered.map(item => item.biz_date),
+            axisLabel: {color: theme.secondary},
+            axisLine: {lineStyle: {color: theme.border}},
+        },
+        yAxis: {
+            type: 'value',
+            name: '消息数',
+            nameTextStyle: {color: theme.muted},
+            axisLabel: {color: theme.secondary},
+            splitLine: {lineStyle: {color: theme.border}},
+        },
+        series: [{type: 'line', smooth: true, symbolSize: 7, areaStyle: {opacity: 0.12}, data: ordered.map(item => item.total)}],
+    }, true);
+}
+
+function renderGroups(data) {
+    const select = document.getElementById('group-filter');
+    const previous = select.value;
+    select.innerHTML = '<option value="">全部群组</option>';
+    data.forEach(item => {
+        const option = document.createElement('option');
+        option.value = item.group_id;
+        option.textContent = item.group_name || item.group_id;
+        select.appendChild(option);
+    });
+    select.value = [...select.options].some(option => option.value === previous) ? previous : '';
+
+    if (!data.length) return emptyChart(charts.groups, '今日暂无消息');
+    const theme = chartTheme();
+    charts.groups.setOption({
+        color: [theme.success],
+        tooltip: {trigger: 'axis', axisPointer: {type: 'shadow'}, formatter: params => `${escapeHtml(params[0].axisValue)}<br/>消息数: ${params[0].data}`},
+        grid: baseGrid(),
+        xAxis: {
+            type: 'category',
+            data: data.map(item => item.group_name || item.group_id),
+            axisLabel: {color: theme.secondary, rotate: 30},
+            axisLine: {lineStyle: {color: theme.border}},
+        },
+        yAxis: {
+            type: 'value',
+            name: '消息数',
+            nameTextStyle: {color: theme.muted},
+            axisLabel: {color: theme.secondary},
+            splitLine: {lineStyle: {color: theme.border}},
+        },
+        series: [{type: 'bar', data: data.map(item => item.count), barMaxWidth: 36}],
+    }, true);
+}
+
+function selectedGroupQuery() {
+    const groupId = document.getElementById('group-filter').value;
+    return groupId ? '?group_id=' + encodeURIComponent(groupId) : '';
+}
+
+function renderHourly(data) {
+    if (!data.length) return emptyChart(charts.hourly, '暂无小时数据');
+    const theme = chartTheme();
+    charts.hourly.setOption({
+        color: [theme.accent],
+        tooltip: {trigger: 'axis', axisPointer: {type: 'shadow'}, formatter: params => `${escapeHtml(params[0].axisValue)}:00<br/>消息数: ${params[0].data}`},
+        grid: baseGrid(),
+        xAxis: {
+            type: 'category',
+            name: '小时',
+            nameTextStyle: {color: theme.muted},
+            data: data.map(item => String(item.hour).padStart(2, '0')),
+            axisLabel: {color: theme.secondary},
+            axisLine: {lineStyle: {color: theme.border}},
+        },
+        yAxis: {
+            type: 'value',
+            name: '消息数',
+            nameTextStyle: {color: theme.muted},
+            axisLabel: {color: theme.secondary},
+            splitLine: {lineStyle: {color: theme.border}},
+        },
+        series: [{type: 'bar', data: data.map(item => item.count), barMaxWidth: 24}],
+    }, true);
+}
+
+function renderSenders(data) {
+    if (!data.length) return emptyChart(charts.senders, '今日暂无发言人数据');
+    const theme = chartTheme();
+    const ordered = [...data].reverse();
+    charts.senders.setOption({
+        color: [theme.warning],
+        tooltip: {trigger: 'axis', axisPointer: {type: 'shadow'}, formatter: params => `${escapeHtml(params[0].axisValue)}<br/>消息数: ${params[0].data}`},
+        grid: {left: 20, right: 20, top: 28, bottom: 20, containLabel: true},
+        xAxis: {
+            type: 'value',
+            name: '消息数',
+            nameTextStyle: {color: theme.muted},
+            axisLabel: {color: theme.secondary},
+            splitLine: {lineStyle: {color: theme.border}},
+        },
+        yAxis: {
+            type: 'category',
+            data: ordered.map(item => item.sender_name || String(item.sender_id)),
+            axisLabel: {color: theme.secondary},
+            axisLine: {lineStyle: {color: theme.border}},
+        },
+        series: [{type: 'bar', data: ordered.map(item => item.count), barMaxWidth: 22}],
+    }, true);
+}
+
+async function loadFilteredCharts() {
+    const query = selectedGroupQuery();
+    const [hourly, senders] = await Promise.all([
+        fetchJson('/api/stats/hourly' + query),
+        fetchJson('/api/stats/top-senders' + query),
+    ]);
+    renderHourly(hourly);
+    renderSenders(senders);
+}
+
+async function loadAllCharts() {
+    try {
+        const [daily, groups, hourly, senders] = await Promise.all([
+            fetchJson('/api/stats/daily-trend'),
+            fetchJson('/api/stats/today-groups'),
+            fetchJson('/api/stats/hourly'),
+            fetchJson('/api/stats/top-senders'),
+        ]);
+        renderDaily(daily);
+        renderGroups(groups);
+        renderHourly(hourly);
+        renderSenders(senders);
+    } catch (error) {
+        Object.values(charts).forEach(chart => emptyChart(chart, error.message));
+    }
+}
+
+document.getElementById('group-filter').addEventListener('change', () => {
+    loadFilteredCharts().catch(error => {
+        emptyChart(charts.hourly, error.message);
+        emptyChart(charts.senders, error.message);
+    });
+});
+
+window.addEventListener('resize', () => Object.values(charts).forEach(chart => chart.resize()));
+loadAllCharts();
+</script>
+{% endblock %}

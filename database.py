@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import logging
+from collections import Counter
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import aiosqlite
 from pathlib import Path
@@ -239,6 +242,61 @@ class Database:
         row = await cursor.fetchone()
         return row[0] if row else 0
 
+    async def get_today_stats_by_group(self, biz_date: str) -> list[dict]:
+        """按群组统计当天消息数，群名取当天最新一条消息里的值。"""
+        cursor = await self.conn.execute(
+            """SELECT m.group_id,
+                      (
+                          SELECT m2.group_name
+                          FROM messages m2
+                          WHERE m2.biz_date = ? AND m2.group_id = m.group_id
+                          ORDER BY m2.timestamp DESC, m2.id DESC
+                          LIMIT 1
+                      ) AS group_name,
+                      COUNT(*) AS count
+               FROM messages m
+               WHERE m.biz_date = ?
+               GROUP BY m.group_id
+               ORDER BY count DESC""",
+            (biz_date, biz_date),
+        )
+        rows = await cursor.fetchall()
+        return [{"group_id": r[0], "group_name": r[1], "count": r[2]} for r in rows]
+
+    async def get_today_hourly_distribution(
+        self, biz_date: str, tz_name: str, group_id: int | None = None
+    ) -> list[dict]:
+        """按业务时区统计当天 0-23 点消息分布，避免依赖 SQLite/宿主机时区。"""
+        params: list = [biz_date]
+        sql = "SELECT timestamp FROM messages WHERE biz_date = ?"
+        if group_id is not None:
+            sql += " AND group_id = ?"
+            params.append(group_id)
+
+        cursor = await self.conn.execute(sql, params)
+        rows = await cursor.fetchall()
+        tz = ZoneInfo(tz_name)
+        counts = Counter(datetime.fromtimestamp(r[0], tz).hour for r in rows)
+        return [{"hour": hour, "count": counts.get(hour, 0)} for hour in range(24)]
+
+    async def get_today_top_senders(
+        self, biz_date: str, group_id: int | None = None, limit: int = 10
+    ) -> list[dict]:
+        """按 sender_id 和 sender_name 统计当天发言人，避免同名用户被合并。"""
+        params: list = [biz_date]
+        sql = """SELECT sender_id, sender_name, COUNT(*) AS count
+                 FROM messages
+                 WHERE biz_date = ? AND sender_id IS NOT NULL"""
+        if group_id is not None:
+            sql += " AND group_id = ?"
+            params.append(group_id)
+        sql += " GROUP BY sender_id, sender_name ORDER BY count DESC LIMIT ?"
+        params.append(limit)
+
+        cursor = await self.conn.execute(sql, params)
+        rows = await cursor.fetchall()
+        return [{"sender_id": r[0], "sender_name": r[1], "count": r[2]} for r in rows]
+
     async def get_unsummarized_dates(self) -> list[dict]:
         cursor = await self.conn.execute(
             """SELECT m.biz_date, COUNT(*) as msg_count
@@ -307,6 +365,70 @@ class Database:
         )
         rows = await cursor.fetchall()
         return [r[0] for r in rows]
+
+    async def get_historical_daily_counts(self, limit: int = 30) -> list[dict]:
+        """从历史摘要表统计每日消息总数。"""
+        cursor = await self.conn.execute(
+            """SELECT biz_date, SUM(message_count) AS total
+               FROM summaries
+               GROUP BY biz_date
+               ORDER BY biz_date DESC
+               LIMIT ?""",
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+        return [{"biz_date": r[0], "total": r[1] or 0} for r in rows]
+
+    async def get_summary_with_context(self, summary_id: int) -> dict | None:
+        """读取单条摘要及其全部上下文窗口和上下文消息，用于导出。"""
+        cursor = await self.conn.execute(
+            """SELECT id, biz_date, group_id, group_name, message_count, summary_text, created_at
+               FROM summaries WHERE id = ?""",
+            (summary_id,),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+
+        summary = {
+            "id": row[0],
+            "biz_date": row[1],
+            "group_id": row[2],
+            "group_name": row[3],
+            "message_count": row[4],
+            "summary_text": row[5],
+            "created_at": row[6],
+            "windows": [],
+        }
+
+        windows_cursor = await self.conn.execute(
+            """SELECT id, ref_message_id
+               FROM context_windows
+               WHERE summary_id = ?
+               ORDER BY ref_message_id ASC""",
+            (summary_id,),
+        )
+        windows = await windows_cursor.fetchall()
+        for window in windows:
+            messages = await self.get_context_messages(window[0])
+            summary["windows"].append({
+                "ref_message_id": window[1],
+                "messages": messages,
+            })
+
+        return summary
+
+    async def get_summaries_by_date_for_export(
+        self, biz_date: str, group_id: int | None = None
+    ) -> list[dict]:
+        """读取某日摘要及上下文；批量导出复用单条导出的完整结构。"""
+        summaries = await self.get_summaries_by_date(biz_date, group_id)
+        result = []
+        for summary in summaries:
+            full_summary = await self.get_summary_with_context(summary["id"])
+            if full_summary:
+                result.append(full_summary)
+        return result
 
     async def delete_expired_summaries(self, cutoff_date: str) -> int:
         cursor = await self.conn.execute(

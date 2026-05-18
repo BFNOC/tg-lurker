@@ -74,6 +74,13 @@
     .ctx-msg-time { font-size: 11px; color: var(--text-muted); margin-right: 8px; }
     .ctx-msg-ref { background: var(--warning-bg); border-left: 3px solid var(--warning); }
     .ctx-loading { text-align: center; padding: 40px; color: var(--text-muted); }
+    .summary-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+    }
 </style>
 
 <div class="page-header">
@@ -96,6 +103,7 @@
                 {% endif %}
             </select>
         </div>
+        <a class="btn btn-ghost btn-sm" href="/summaries/export?date={{ selected_date }}">导出当日</a>
     </form>
 
     <div class="section-divider"></div>
@@ -108,7 +116,10 @@
                     <svg style="width:18px;height:18px;vertical-align:middle;margin-right:4px;color:var(--accent);" aria-hidden="true" role="img"><use href="#icon-groups"></use></svg>
                     {{ s.group_name }}
                 </div>
-                <span class="summary-msg-count">{{ s.message_count }} 条消息</span>
+                <div class="summary-actions">
+                    <span class="summary-msg-count">{{ s.message_count }} 条消息</span>
+                    <a class="btn btn-ghost btn-sm" href="/summaries/{{ s.id }}/export">导出</a>
+                </div>
             </div>
             <div class="summary-text" data-summary-id="{{ s.id }}" data-group-id="{{ s.group_id }}"
                  data-windows='{{ s.context_windows | tojson }}'>{{ s.summary_text }}</div>
