@@ -221,7 +221,16 @@ async def seed():
         for gid, gname in FAKE_GROUPS[:5]:
             summary = FAKE_SUMMARIES.get(gname, f"{gname} 的日常讨论摘要。")
             count = random.randint(50, 200)
-            summary_id = await db.insert_summary(past_date, gid, gname, count, summary)
+            cursor = await db.conn.execute(
+                """INSERT OR IGNORE INTO summaries
+                   (biz_date, biz_period, group_id, group_name, message_count, summary_text)
+                   VALUES (?, 'daily', ?, ?, ?, ?)""",
+                (past_date, gid, gname, count, summary),
+            )
+            await db.conn.commit()
+            if cursor.rowcount == 0:
+                continue
+            summary_id = cursor.lastrowid
 
             refs = re.findall(r'\[m:(\d+)\]', summary)
             for i, ref_id in enumerate(refs):

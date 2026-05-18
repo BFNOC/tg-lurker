@@ -199,8 +199,13 @@ class SummaryScheduler:
         )
         logger.info(f"Retry scheduled scope={scope} in {self.RETRY_DELAY_MINUTES} minutes")
 
-    async def trigger_now(self, group_ids: list[int] | None = None, biz_date: str | None = None) -> dict:
-        return await self._summarizer.run_daily_summary(group_ids, biz_date)
+    async def trigger_now(
+        self,
+        group_ids: list[int] | None = None,
+        biz_date: str | None = None,
+        biz_period: str | None = None,
+    ) -> dict:
+        return await self._summarizer.run_daily_summary(group_ids, biz_date, biz_period=biz_period or "daily")
 
     def stop(self) -> None:
         self._scheduler.shutdown(wait=False)

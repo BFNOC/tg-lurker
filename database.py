@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 from collections import Counter
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -412,6 +413,7 @@ class Database:
             """SELECT m.biz_date, COUNT(*) as msg_count
                FROM messages m
                LEFT JOIN summaries s ON m.biz_date = s.biz_date
+                                      AND s.biz_period NOT LIKE 'manual_%'
                WHERE s.id IS NULL
                GROUP BY m.biz_date
                ORDER BY m.biz_date DESC"""
@@ -429,15 +431,27 @@ class Database:
         message_count: int,
         summary_text: str,
         biz_period: str = "daily",
-    ) -> int:
-        cursor = await self.conn.execute(
-            """INSERT OR REPLACE INTO summaries
-               (biz_date, biz_period, group_id, group_name, message_count, summary_text)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (biz_date, biz_period, group_id, group_name, message_count, summary_text),
-        )
-        await self.conn.commit()
-        return cursor.lastrowid
+    ) -> int | None:
+        try:
+            cursor = await self.conn.execute(
+                """INSERT INTO summaries
+                   (biz_date, biz_period, group_id, group_name, message_count, summary_text)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (biz_date, biz_period, group_id, group_name, message_count, summary_text),
+            )
+            await self.conn.commit()
+            return cursor.lastrowid
+        except sqlite3.IntegrityError as e:
+            if "UNIQUE constraint failed" in str(e):
+                await self.conn.rollback()
+                logger.warning(
+                    "Skipped duplicate summary biz_date=%s group_id=%s biz_period=%s",
+                    biz_date,
+                    group_id,
+                    biz_period,
+                )
+                return None
+            raise
 
     async def summary_exists(self, biz_date: str, group_id: int, biz_period: str) -> bool:
         cursor = await self.conn.execute(
@@ -501,6 +515,7 @@ class Database:
         cursor = await self.conn.execute(
             """SELECT biz_date, SUM(message_count) AS total
                FROM summaries
+               WHERE biz_period NOT LIKE 'manual_%'
                GROUP BY biz_date
                ORDER BY biz_date DESC
                LIMIT ?""",
@@ -651,6 +666,7 @@ class Database:
                           SUM(message_count) AS daily_count,
                           MAX(created_at) AS last_summary_at
                    FROM summaries
+                   WHERE biz_period NOT LIKE 'manual_%'
                    GROUP BY group_id, biz_date
                ) d ON d.group_id = g.group_id
                GROUP BY g.group_id, g.group_name, g.is_active, g.summary_cron

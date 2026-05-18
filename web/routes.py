@@ -85,6 +85,8 @@ def _escape_markdown_table_cell(value) -> str:
 def _format_biz_period(biz_period: str | None) -> str:
     if not biz_period or biz_period == "daily":
         return "每日摘要"
+    if biz_period.startswith("manual_"):
+        return f"手动 ({biz_period[7:]})"
     return f"{biz_period} 摘要"
 
 
@@ -708,8 +710,11 @@ async def trigger_summary(request: Request):
         selected = form.getlist("group_ids")
         group_ids = [int(gid) for gid in selected] if selected else None
         target_date = form.get("biz_date", None) or None
+        tz = ZoneInfo(request.app.state.config.tz)
+        now = datetime.now(tz)
+        biz_period = f"manual_{now.strftime('%H:%M:%S')}"
 
-        results = await scheduler.trigger_now(group_ids=group_ids, biz_date=target_date)
+        results = await scheduler.trigger_now(group_ids=group_ids, biz_date=target_date, biz_period=biz_period)
         report = request.app.state.scheduler._summarizer.format_report(results)
         escaped = html_mod.escape(report)
         return HTMLResponse(f"<pre class='whitespace-pre-wrap' style='font-size:13px;line-height:1.7;'>{escaped}</pre>")

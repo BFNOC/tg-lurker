@@ -193,6 +193,8 @@ class Summarizer:
                 summary_text=summary,
                 biz_period=biz_period,
             )
+            if summary_id is None:
+                return None
 
             context_radius = await self._get_context_radius()
             valid_msg_ids = {m["message_id"] for m in messages}
@@ -249,7 +251,13 @@ class Summarizer:
             active_groups = [g for g in active_groups if g["group_id"] in group_ids]
 
         context_radius = await self._get_context_radius()
-        results: dict = {"date": biz_date, "groups": [], "failed": [], "snapshot_ts": snapshot_ts}
+        results: dict = {
+            "date": biz_date,
+            "biz_period": biz_period,
+            "groups": [],
+            "failed": [],
+            "snapshot_ts": snapshot_ts,
+        }
 
         for group in active_groups:
             group_id = group["group_id"]
@@ -278,6 +286,8 @@ class Summarizer:
                 summary_text=summary,
                 biz_period=biz_period,
             )
+            if summary_id is None:
+                continue
 
             keep_ids: set[int] = set()
             seen_refs: set[int] = set()
@@ -338,7 +348,11 @@ class Summarizer:
             logger.info(f"Cleaned {cleaned} LRU context messages")
 
     def format_report(self, results: dict) -> str:
-        lines = [f"📋 每日群聊摘要 ({results['date']})", ""]
+        biz_period = results.get("biz_period", "daily")
+        if biz_period.startswith("manual_"):
+            lines = [f"📋 手动群聊摘要 ({results['date']} {biz_period[7:]})", ""]
+        else:
+            lines = [f"📋 每日群聊摘要 ({results['date']})", ""]
 
         for g in results["groups"]:
             lines.append(f"【{g['name']}】({g['count']}条消息)")
