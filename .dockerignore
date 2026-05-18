@@ -15,3 +15,5 @@ venv
 .vscode
 *.md
 !requirements.txt
+.DS_Store
+.claude

@@ -248,6 +248,8 @@ function renderCtxMessages(messages, refId) {
         div.appendChild(textNode);
         body.appendChild(div);
     });
+    const ref = body.querySelector('.ctx-msg-ref');
+    if (ref) ref.scrollIntoView({ block: 'center' });
 }
 
 function closeCtxModal() {
