@@ -27,6 +27,7 @@
         z-index: 1000;
         align-items: center;
         justify-content: center;
+        overflow-y: auto;
     }
     .modal-overlay.active { display: flex; }
     .modal-box {
@@ -147,28 +148,30 @@ document.querySelectorAll('.summary-text').forEach(el => {
     const windowMap = {};
     windows.forEach(w => { windowMap[w.ref_message_id] = w.id; });
 
-    const text = el.textContent;
-    const parts = text.split(/(\[m:\d+\])/g);
-    el.innerHTML = '';
-    parts.forEach(part => {
-        const match = part.match(/^\[m:(\d+)\]$/);
-        if (match) {
-            const id = parseInt(match[1]);
-            const wid = windowMap[id];
-            if (wid) {
-                const btn = document.createElement('button');
-                btn.className = 'ctx-btn';
-                btn.textContent = 'ctx';
-                btn.onclick = () => openCtx(wid, groupId, id);
-                el.appendChild(btn);
-            } else {
-                const span = document.createElement('span');
-                span.style.cssText = 'font-size:11px;color:var(--text-muted);';
-                span.textContent = part;
-                el.appendChild(span);
-            }
+    let text = el.textContent;
+
+    // Replace [m:xxx] with placeholder spans before markdown rendering
+    text = text.replace(/\[m:(\d+)\]/g, '<span class="ctx-placeholder" data-msg-id="$1"></span>');
+
+    // Render markdown
+    if (typeof marked !== 'undefined') {
+        el.innerHTML = marked.parse(text);
+    } else {
+        el.innerHTML = text;
+    }
+
+    // Replace placeholder spans with ctx buttons
+    el.querySelectorAll('.ctx-placeholder').forEach(span => {
+        const id = parseInt(span.dataset.msgId);
+        const wid = windowMap[id];
+        if (wid) {
+            const btn = document.createElement('button');
+            btn.className = 'ctx-btn';
+            btn.textContent = 'ctx';
+            btn.onclick = () => openCtx(wid, groupId, id);
+            span.replaceWith(btn);
         } else {
-            el.appendChild(document.createTextNode(part));
+            span.remove();
         }
     });
 });
