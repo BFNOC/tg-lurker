@@ -81,6 +81,22 @@
         flex-wrap: wrap;
         justify-content: flex-end;
     }
+    .summary-period-divider {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin: 28px 0 16px;
+        font-family: var(--font-display);
+        font-size: 15px;
+        font-weight: 700;
+        color: var(--text-secondary);
+    }
+    .summary-period-divider::after {
+        content: "";
+        flex: 1;
+        height: 1px;
+        background: var(--border);
+    }
 </style>
 
 <div class="page-header">
@@ -109,7 +125,12 @@
     <div class="section-divider"></div>
 
     {% if summaries %}
+        {% set ns = namespace(period='') %}
         {% for s in summaries %}
+        {% if s.biz_period != ns.period %}
+        {% set ns.period = s.biz_period %}
+        <div class="summary-period-divider">{{ s.biz_period_label }}</div>
+        {% endif %}
         <div class="summary-item animate-fade-in" style="animation-delay: {{ loop.index0 * 0.1 }}s;">
             <div class="summary-header">
                 <div class="summary-group-name">
@@ -117,6 +138,7 @@
                     {{ s.group_name }}
                 </div>
                 <div class="summary-actions">
+                    <span class="summary-msg-count">{{ s.biz_period_label }}</span>
                     <span class="summary-msg-count">{{ s.message_count }} 条消息</span>
                     <a class="btn btn-ghost btn-sm" href="/summaries/{{ s.id }}/export">导出</a>
                 </div>

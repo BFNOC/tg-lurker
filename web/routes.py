@@ -6,6 +6,7 @@ import zipfile
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from apscheduler.triggers.cron import CronTrigger
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 
@@ -13,6 +14,23 @@ from web import templates
 from web.auth import is_authenticated, get_csrf_token, verify_csrf
 
 router = APIRouter()
+
+FREQUENCY_PRESETS = {
+    "default": None,
+    "4h": "0 0,4,8,12,16,20 * * *",
+    "8h": "0 0,8,16 * * *",
+    "12h": "0 0,12 * * *",
+    "daily": "0 22 * * *",
+}
+
+FREQUENCY_LABELS = {
+    "default": "全局默认",
+    "4h": "每4小时",
+    "8h": "每8小时",
+    "12h": "每12小时",
+    "daily": "每天一次",
+    "custom": "自定义",
+}
 
 
 def _require_auth(request: Request):
@@ -48,7 +66,9 @@ def _safe_filename_part(name: str) -> str:
 
 def _summary_filename(summary: dict) -> str:
     safe_name = _safe_filename_part(summary["group_name"])
-    return f"{summary['biz_date']}-{summary['group_id']}-{safe_name}.md"
+    biz_period = summary.get("biz_period", "daily")
+    period_part = "" if biz_period == "daily" else f"-{_safe_filename_part(biz_period)}"
+    return f"{summary['biz_date']}{period_part}-{summary['group_id']}-{safe_name}.md"
 
 
 def _download_headers(filename: str) -> dict:
@@ -62,12 +82,59 @@ def _escape_markdown_table_cell(value) -> str:
     return text.replace("|", r"\|").replace("\r\n", "<br>").replace("\n", "<br>").replace("\r", "<br>")
 
 
+def _format_biz_period(biz_period: str | None) -> str:
+    if not biz_period or biz_period == "daily":
+        return "每日摘要"
+    return f"{biz_period} 摘要"
+
+
+def _activity_class(avg_daily_messages: float) -> str:
+    if avg_daily_messages < 100:
+        return "activity-low"
+    if avg_daily_messages < 500:
+        return "activity-normal"
+    if avg_daily_messages < 1500:
+        return "activity-high"
+    return "activity-extreme"
+
+
+def _frequency_mode(summary_cron: str | None) -> str:
+    if not summary_cron:
+        return "default"
+    for mode, cron in FREQUENCY_PRESETS.items():
+        if mode != "default" and cron == summary_cron:
+            return mode
+    return "custom"
+
+
+async def _groups_template_context(request: Request) -> dict:
+    db = request.app.state.db
+    config = request.app.state.config
+    global_cron = await db.get_setting("summary_cron", config.summary_cron)
+    groups = await db.list_groups_with_activity()
+    for group in groups:
+        avg = group["avg_daily_messages"]
+        mode = _frequency_mode(group.get("summary_cron"))
+        group["avg_daily_messages_display"] = int(round(avg))
+        group["activity_class"] = _activity_class(avg)
+        group["frequency_mode"] = mode
+        group["frequency_label"] = FREQUENCY_LABELS.get(mode, "自定义")
+        group["effective_summary_cron"] = group.get("summary_cron") or global_cron
+    return {
+        "groups": groups,
+        "global_summary_cron": global_cron,
+        "frequency_presets": FREQUENCY_PRESETS,
+        "frequency_labels": FREQUENCY_LABELS,
+    }
+
+
 def _render_summary_markdown(summary: dict, tz: ZoneInfo) -> str:
     created_at = datetime.fromtimestamp(summary["created_at"], tz).strftime("%Y-%m-%d %H:%M:%S")
+    period_label = _format_biz_period(summary.get("biz_period", "daily"))
     lines = [
-        f"# {summary['group_name']} — {summary['biz_date']}",
+        f"# {summary['group_name']} — {summary['biz_date']} {period_label}",
         "",
-        f"> 消息数: {summary['message_count']} | 生成时间: {created_at}",
+        f"> 消息数: {summary['message_count']} | 时段: {period_label} | 生成时间: {created_at}",
         "",
         "## 摘要",
         "",
@@ -331,11 +398,8 @@ async def groups_page(request: Request):
     if redirect:
         return redirect
 
-    db = request.app.state.db
-    groups = await db.list_all_groups()
-    return templates.TemplateResponse(request, "groups.html", {
-        "groups": groups,
-    })
+    context = await _groups_template_context(request)
+    return templates.TemplateResponse(request, "groups.html", context)
 
 
 @router.post("/groups/sync")
@@ -352,11 +416,11 @@ async def sync_groups(request: Request):
         return HTMLResponse("<span style='color:var(--danger);font-weight:600;'>Bot 未连接</span>")
 
     await bot._sync_groups()
-    db = request.app.state.db
-    groups = await db.list_all_groups()
-    return templates.TemplateResponse(request, "groups.html", {
-        "groups": groups,
-    })
+    scheduler = request.app.state.scheduler
+    if scheduler is not None:
+        await scheduler.reload_jobs()
+    context = await _groups_template_context(request)
+    return templates.TemplateResponse(request, "groups.html", context)
 
 
 @router.post("/groups/{group_id}/toggle")
@@ -373,10 +437,57 @@ async def toggle_group(request: Request, group_id: int):
     is_active = form.get("is_active", "0") == "1"
     await db.toggle_group(group_id, is_active)
 
-    groups = await db.list_all_groups()
-    return templates.TemplateResponse(request, "groups.html", {
-        "groups": groups,
-    }, headers={"HX-Trigger": "groupsUpdated"})
+    scheduler = request.app.state.scheduler
+    if scheduler is not None:
+        await scheduler.reload_jobs()
+
+    context = await _groups_template_context(request)
+    return templates.TemplateResponse(request, "groups.html", context, headers={"HX-Trigger": "groupsUpdated"})
+
+
+@router.post("/groups/{group_id}/frequency")
+async def update_group_frequency(request: Request, group_id: int):
+    redirect = _require_auth(request)
+    if redirect:
+        return redirect
+    csrf_err = await _require_csrf(request)
+    if csrf_err:
+        return csrf_err
+
+    db = request.app.state.db
+    config = request.app.state.config
+    form = await request.form()
+    mode = str(form.get("frequency_mode", "default"))
+    custom_cron = str(form.get("custom_cron", "")).strip()
+
+    if mode == "custom":
+        summary_cron = custom_cron
+    elif mode in FREQUENCY_PRESETS:
+        summary_cron = FREQUENCY_PRESETS[mode]
+    else:
+        summary_cron = None
+
+    if mode == "custom" and not summary_cron:
+        context = await _groups_template_context(request)
+        context.update({"frequency_error_group_id": group_id, "frequency_error": "请输入自定义 Cron 表达式"})
+        return templates.TemplateResponse(request, "groups.html", context)
+
+    if summary_cron is not None:
+        try:
+            CronTrigger.from_crontab(summary_cron, timezone=ZoneInfo(config.tz))
+        except ValueError as e:
+            context = await _groups_template_context(request)
+            context.update({"frequency_error_group_id": group_id, "frequency_error": f"Cron 无效: {e}"})
+            return templates.TemplateResponse(request, "groups.html", context)
+
+    await db.update_group_summary_cron(group_id, summary_cron)
+
+    scheduler = request.app.state.scheduler
+    if scheduler is not None:
+        await scheduler.reload_jobs()
+
+    context = await _groups_template_context(request)
+    return templates.TemplateResponse(request, "groups.html", context, headers={"HX-Trigger": "groupsUpdated"})
 
 
 @router.get("/summaries/export")
@@ -444,6 +555,7 @@ async def summaries_page(request: Request):
     summaries = await db.get_summaries_by_date(date)
 
     for s in summaries:
+        s["biz_period_label"] = _format_biz_period(s.get("biz_period", "daily"))
         s["context_windows"] = await db.get_context_windows_by_summary(s["id"])
         await db.touch_summary(s["id"])
 
@@ -525,6 +637,10 @@ async def save_settings(request: Request):
     bot = request.app.state.bot
     if bot and hasattr(bot, "_reload_alert_keywords"):
         await bot._reload_alert_keywords()
+
+    scheduler = request.app.state.scheduler
+    if scheduler is not None:
+        await scheduler.reload_jobs()
 
     config = request.app.state.config
     raw_key = await db.get_setting("llm_api_key", config.llm_api_key)

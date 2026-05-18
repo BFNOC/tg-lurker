@@ -38,7 +38,7 @@ async def main() -> None:
         await bot.client.send_message(config.owner_id, text)
 
     bot.set_alert_callback(send_to_owner)
-    scheduler = SummaryScheduler(config, summarizer, send_callback=send_to_owner)
+    scheduler = SummaryScheduler(config, summarizer, db=db, send_callback=send_to_owner)
 
     app = create_app(config, db, bot=bot, scheduler=scheduler)
 

@@ -129,8 +129,7 @@ class Summarizer:
     def parse_referenced_ids(text: str) -> list[int]:
         return [int(m) for m in _REF_PATTERN.findall(text)]
 
-    async def summarize_group(self, biz_date: str, group_id: int, group_name: str) -> tuple[str, list[int]] | None:
-        messages = await self._db.get_messages_by_date(biz_date, group_id)
+    async def _summarize_messages(self, messages: list[dict]) -> tuple[str, list[int]] | None:
         if not messages:
             return None
 
@@ -149,14 +148,97 @@ class Summarizer:
             ref_ids = self.parse_referenced_ids(summary)
             return (summary, ref_ids)
         except Exception as e:
+            group_name = messages[0].get("group_name", "Unknown")
+            group_id = messages[0].get("group_id", 0)
             logger.error(f"LLM failed for group {group_name} ({group_id}): {e}")
             return None
 
-    async def run_daily_summary(self, group_ids: list[int] | None = None, biz_date: str | None = None) -> dict:
-        async with self._lock:
-            return await self._execute_summary(group_ids, biz_date)
+    async def summarize_group(self, biz_date: str, group_id: int, group_name: str) -> tuple[str, list[int]] | None:
+        messages = await self._db.get_messages_by_date(biz_date, group_id)
+        return await self._summarize_messages(messages)
 
-    async def _execute_summary(self, group_ids: list[int] | None = None, biz_date: str | None = None) -> dict:
+    async def run_incremental_summary(self, group_id: int) -> dict | None:
+        async with self._lock:
+            now = datetime.now(self._tz)
+            snapshot_ts = int(now.timestamp())
+            biz_date = now.strftime("%Y-%m-%d")
+            biz_period = f"{now.hour:02d}:00"
+
+            if await self._db.summary_exists(biz_date, group_id, biz_period):
+                return None
+
+            active_groups = await self._db.get_active_groups()
+            group = next((g for g in active_groups if g["group_id"] == group_id), None)
+            if not group:
+                return None
+
+            last_ts = await self._db.get_last_summary_ts(group_id)
+            if last_ts is None:
+                messages = await self._db.get_messages_by_date(biz_date, group_id)
+            else:
+                messages = await self._db.get_messages_since(group_id, last_ts, snapshot_ts)
+            if not messages or len(messages) < 5:
+                return None
+
+            result = await self._summarize_messages(messages)
+            if result is None:
+                return None
+
+            summary, ref_ids = result
+            summary_id = await self._db.insert_summary(
+                biz_date=biz_date,
+                group_id=group_id,
+                group_name=group["group_name"],
+                message_count=len(messages),
+                summary_text=summary,
+                biz_period=biz_period,
+            )
+
+            context_radius = await self._get_context_radius()
+            valid_msg_ids = {m["message_id"] for m in messages}
+            seen_refs: set[int] = set()
+            for ref_id in ref_ids:
+                if ref_id in seen_refs or ref_id not in valid_msg_ids:
+                    continue
+                seen_refs.add(ref_id)
+                window_msgs = await self._db.get_messages_around(group_id, ref_id, context_radius)
+                if window_msgs:
+                    window_id = await self._db.insert_context_window(summary_id, group_id, ref_id)
+                    await self._db.insert_context_messages(window_id, window_msgs)
+
+            await self._cleanup_expired()
+            return {
+                "date": biz_date,
+                "biz_period": biz_period,
+                "group_id": group_id,
+                "name": group["group_name"],
+                "count": len(messages),
+                "summary": summary,
+            }
+
+    async def run_daily_summary(
+        self,
+        group_ids: list[int] | None = None,
+        biz_date: str | None = None,
+        biz_period: str = "daily",
+        skip_existing: bool = False,
+    ) -> dict:
+        async with self._lock:
+            return await self._execute_summary(group_ids, biz_date, biz_period, skip_existing)
+
+    async def _get_context_radius(self) -> int:
+        try:
+            return max(5, min(100, int(await self._db.get_setting("context_radius", "30"))))
+        except (ValueError, TypeError):
+            return 30
+
+    async def _execute_summary(
+        self,
+        group_ids: list[int] | None = None,
+        biz_date: str | None = None,
+        biz_period: str = "daily",
+        skip_existing: bool = False,
+    ) -> dict:
         if biz_date is None:
             biz_date = datetime.now(self._tz).strftime("%Y-%m-%d")
 
@@ -166,15 +248,15 @@ class Summarizer:
         if group_ids is not None:
             active_groups = [g for g in active_groups if g["group_id"] in group_ids]
 
-        try:
-            context_radius = max(5, min(100, int(await self._db.get_setting("context_radius", "30"))))
-        except (ValueError, TypeError):
-            context_radius = 30
+        context_radius = await self._get_context_radius()
         results: dict = {"date": biz_date, "groups": [], "failed": [], "snapshot_ts": snapshot_ts}
 
         for group in active_groups:
             group_id = group["group_id"]
             group_name = group["group_name"]
+
+            if skip_existing and await self._db.summary_exists(biz_date, group_id, biz_period):
+                continue
 
             result = await self.summarize_group(biz_date, group_id, group_name)
 
@@ -194,6 +276,7 @@ class Summarizer:
                 group_name=group_name,
                 message_count=msg_count,
                 summary_text=summary,
+                biz_period=biz_period,
             )
 
             keep_ids: set[int] = set()
@@ -228,6 +311,15 @@ class Summarizer:
         await self._cleanup_expired()
 
         return results
+
+    def format_incremental_report(self, result: dict) -> str:
+        period_label = "每日摘要" if result["biz_period"] == "daily" else f"{result['biz_period']} 摘要"
+        return "\n".join([
+            f"📋 群聊摘要 ({result['date']} {period_label})",
+            "",
+            f"【{result['name']}】({result['count']}条消息)",
+            result["summary"],
+        ])
 
     async def _cleanup_expired(self) -> None:
         retention_str = await self._db.get_setting(
