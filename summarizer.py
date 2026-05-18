@@ -129,6 +129,51 @@ class Summarizer:
     def parse_referenced_ids(text: str) -> list[int]:
         return [int(m) for m in _REF_PATTERN.findall(text)]
 
+    @staticmethod
+    def _group_nearby_refs(ref_ids: list[int], messages: list[dict], radius: int) -> list[list[int]]:
+        if not ref_ids:
+            return []
+        msg_positions = {m["message_id"]: i for i, m in enumerate(messages)}
+        sorted_refs = sorted(set(ref_ids), key=lambda r: msg_positions.get(r, 0))
+        groups: list[list[int]] = [[sorted_refs[0]]]
+        for ref in sorted_refs[1:]:
+            last_ref = groups[-1][-1]
+            pos_last = msg_positions.get(last_ref, 0)
+            pos_curr = msg_positions.get(ref, 0)
+            if pos_curr - pos_last <= 2 * radius:
+                groups[-1].append(ref)
+            else:
+                groups.append([ref])
+        return groups
+
+    async def _create_context_windows(
+        self, summary_id: int, group_id: int, ref_ids: list[int], messages: list[dict], context_radius: int
+    ) -> set[int]:
+        valid_msg_ids = {m["message_id"] for m in messages}
+        valid_refs = [r for r in ref_ids if r in valid_msg_ids]
+        ref_groups = self._group_nearby_refs(valid_refs, messages, context_radius)
+        keep_ids: set[int] = set()
+        for group in ref_groups:
+            primary_ref = group[0]
+            window_msgs = await self._db.get_messages_around(group_id, primary_ref, context_radius)
+            if not window_msgs:
+                continue
+            if len(group) > 1:
+                all_ids = {m["message_id"] for m in window_msgs}
+                for extra_ref in group[1:]:
+                    extra_msgs = await self._db.get_messages_around(group_id, extra_ref, context_radius)
+                    for m in extra_msgs:
+                        if m["message_id"] not in all_ids:
+                            window_msgs.append(m)
+                            all_ids.add(m["message_id"])
+                window_msgs.sort(key=lambda m: m["message_id"])
+            window_id = await self._db.insert_context_window(
+                summary_id, group_id, primary_ref, covered_refs=group
+            )
+            await self._db.insert_context_messages(window_id, window_msgs)
+            keep_ids.update(m["message_id"] for m in window_msgs)
+        return keep_ids
+
     async def _summarize_messages(self, messages: list[dict]) -> tuple[str, list[int]] | None:
         if not messages:
             return None
@@ -197,16 +242,7 @@ class Summarizer:
                 return None
 
             context_radius = await self._get_context_radius()
-            valid_msg_ids = {m["message_id"] for m in messages}
-            seen_refs: set[int] = set()
-            for ref_id in ref_ids:
-                if ref_id in seen_refs or ref_id not in valid_msg_ids:
-                    continue
-                seen_refs.add(ref_id)
-                window_msgs = await self._db.get_messages_around(group_id, ref_id, context_radius)
-                if window_msgs:
-                    window_id = await self._db.insert_context_window(summary_id, group_id, ref_id)
-                    await self._db.insert_context_messages(window_id, window_msgs)
+            await self._create_context_windows(summary_id, group_id, ref_ids, messages, context_radius)
 
             await self._cleanup_expired()
             return {
@@ -289,18 +325,7 @@ class Summarizer:
             if summary_id is None:
                 continue
 
-            keep_ids: set[int] = set()
-            seen_refs: set[int] = set()
-            valid_msg_ids = {m["message_id"] for m in messages}
-            for ref_id in ref_ids:
-                if ref_id in seen_refs or ref_id not in valid_msg_ids:
-                    continue
-                seen_refs.add(ref_id)
-                window_msgs = await self._db.get_messages_around(group_id, ref_id, context_radius)
-                if window_msgs:
-                    window_id = await self._db.insert_context_window(summary_id, group_id, ref_id)
-                    await self._db.insert_context_messages(window_id, window_msgs)
-                    keep_ids.update(m["message_id"] for m in window_msgs)
+            keep_ids = await self._create_context_windows(summary_id, group_id, ref_ids, messages, context_radius)
 
             results["groups"].append({
                 "name": group_name,

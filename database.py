@@ -146,6 +146,11 @@ class Database:
         await self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_summaries_accessed ON summaries(last_accessed_at)"
         )
+        await self._ensure_column(
+            "context_windows",
+            "covered_refs",
+            "ALTER TABLE context_windows ADD COLUMN covered_refs TEXT",
+        )
         await self.conn.commit()
 
     async def _ensure_column(self, table: str, column: str, ddl: str) -> None:
@@ -788,10 +793,12 @@ class Database:
 
     # --- context windows ---
 
-    async def insert_context_window(self, summary_id: int, group_id: int, ref_message_id: int) -> int:
+    async def insert_context_window(self, summary_id: int, group_id: int, ref_message_id: int, covered_refs: list[int] | None = None) -> int:
+        import json
+        covered_json = json.dumps(covered_refs) if covered_refs else None
         cursor = await self.conn.execute(
-            "INSERT INTO context_windows (summary_id, group_id, ref_message_id) VALUES (?, ?, ?)",
-            (summary_id, group_id, ref_message_id),
+            "INSERT INTO context_windows (summary_id, group_id, ref_message_id, covered_refs) VALUES (?, ?, ?, ?)",
+            (summary_id, group_id, ref_message_id, covered_json),
         )
         await self.conn.commit()
         return cursor.lastrowid
@@ -809,12 +816,20 @@ class Database:
         await self.conn.commit()
 
     async def get_context_windows_by_summary(self, summary_id: int) -> list[dict]:
+        import json
         cursor = await self.conn.execute(
-            "SELECT id, group_id, ref_message_id FROM context_windows WHERE summary_id = ?",
+            "SELECT id, group_id, ref_message_id, covered_refs FROM context_windows WHERE summary_id = ?",
             (summary_id,),
         )
         rows = await cursor.fetchall()
-        return [{"id": r[0], "group_id": r[1], "ref_message_id": r[2]} for r in rows]
+        results = []
+        for r in rows:
+            try:
+                covered = json.loads(r[3]) if r[3] else [r[2]]
+            except (json.JSONDecodeError, TypeError):
+                covered = [r[2]]
+            results.append({"id": r[0], "group_id": r[1], "ref_message_id": r[2], "covered_refs": covered})
+        return results
 
     async def get_context_messages(self, window_id: int) -> list[dict]:
         cursor = await self.conn.execute(

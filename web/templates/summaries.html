@@ -174,34 +174,39 @@
 <script>
 let currentGroupId = 0;
 let currentMsgId = 0;
+let currentRefIds = new Set();
 
 document.querySelectorAll('.summary-text').forEach(el => {
     const windows = JSON.parse(el.dataset.windows || '[]');
     const groupId = el.dataset.groupId;
     const windowMap = {};
-    windows.forEach(w => { windowMap[w.ref_message_id] = w.id; });
+    const windowRefs = {};
+    const shownWindows = new Set();
+    windows.forEach(w => {
+        const refs = w.covered_refs || [w.ref_message_id];
+        windowRefs[w.id] = refs;
+        refs.forEach(r => { windowMap[r] = w.id; });
+    });
 
     let text = el.textContent;
 
-    // Replace [m:xxx] with placeholder spans before markdown rendering
     text = text.replace(/\[m:(\d+)\]/g, '<span class="ctx-placeholder" data-msg-id="$1"></span>');
 
-    // Render markdown
     if (typeof marked !== 'undefined') {
         el.innerHTML = marked.parse(text);
     } else {
         el.innerHTML = text;
     }
 
-    // Replace placeholder spans with ctx buttons
     el.querySelectorAll('.ctx-placeholder').forEach(span => {
         const id = parseInt(span.dataset.msgId);
         const wid = windowMap[id];
-        if (wid) {
+        if (wid && !shownWindows.has(wid)) {
+            shownWindows.add(wid);
             const btn = document.createElement('button');
             btn.className = 'ctx-btn';
             btn.textContent = 'ctx';
-            btn.onclick = () => openCtx(wid, groupId, id);
+            btn.onclick = () => openCtx(wid, groupId, id, windowRefs[wid]);
             span.replaceWith(btn);
         } else {
             span.remove();
@@ -209,22 +214,23 @@ document.querySelectorAll('.summary-text').forEach(el => {
     });
 });
 
-function openCtx(windowId, groupId, msgId) {
+function openCtx(windowId, groupId, msgId, coveredRefs) {
     currentGroupId = groupId;
     currentMsgId = msgId;
+    currentRefIds = new Set((coveredRefs || [msgId]).map(Number));
     document.getElementById('ctx-modal').classList.add('active');
     document.getElementById('ctx-body').innerHTML = '<div class="ctx-loading"><div class="spinner"></div></div>';
     document.getElementById('ctx-fetch-more').style.display = 'inline-flex';
 
     fetch('/api/context/' + windowId)
         .then(r => r.json())
-        .then(data => renderCtxMessages(data.messages, msgId))
+        .then(data => renderCtxMessages(data.messages, currentRefIds))
         .catch(e => {
             document.getElementById('ctx-body').innerHTML = '<p style="color:var(--danger)">Failed: ' + e.message + '</p>';
         });
 }
 
-function renderCtxMessages(messages, refId) {
+function renderCtxMessages(messages, refIds) {
     const body = document.getElementById('ctx-body');
     if (!messages || messages.length === 0) {
         body.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:40px;">无上下文消息</p>';
@@ -232,7 +238,7 @@ function renderCtxMessages(messages, refId) {
     }
     body.innerHTML = '';
     messages.forEach(m => {
-        const isRef = m.message_id == refId;
+        const isRef = refIds.has(m.message_id);
         const time = new Date(m.timestamp * 1000).toLocaleTimeString('zh-CN', {hour:'2-digit', minute:'2-digit'});
         const div = document.createElement('div');
         div.className = 'ctx-msg' + (isRef ? ' ctx-msg-ref' : '');
@@ -274,7 +280,7 @@ document.getElementById('ctx-fetch-more').addEventListener('click', function() {
         .then(r => r.json())
         .then(data => {
             if (data.error) throw new Error(data.error);
-            renderCtxMessages(data.messages, currentMsgId);
+            renderCtxMessages(data.messages, currentRefIds);
             this.textContent = '已回溯';
         })
         .catch(e => {
