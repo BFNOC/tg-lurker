@@ -208,7 +208,6 @@ class Summarizer:
             return summary, self.parse_referenced_ids(summary)
 
         changed = False
-        msg_by_id = {m["message_id"]: m for m in messages}
 
         for i, (header, body) in enumerate(topics):
             full_topic = header + "\n" + body
@@ -219,17 +218,20 @@ class Summarizer:
             if not words:
                 continue
 
-            scored: list[tuple[int, float]] = []
+            scored: list[tuple[int, int]] = []
             for msg in messages:
                 text_lower = (msg.get("text") or "").lower()
                 if not text_lower:
                     continue
                 hits = sum(1 for w in words if w.lower() in text_lower)
-                if hits >= 2:
+                if hits >= 1:
                     scored.append((msg["message_id"], hits))
 
             scored.sort(key=lambda x: -x[1])
             top_refs = [sid for sid, _ in scored[:3]]
+
+            if not top_refs and messages:
+                top_refs = [messages[len(messages) // 2]["message_id"]]
 
             if not top_refs:
                 continue
