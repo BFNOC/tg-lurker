@@ -137,10 +137,10 @@ class Summarizer:
         sorted_refs = sorted(set(ref_ids), key=lambda r: msg_positions.get(r, 0))
         groups: list[list[int]] = [[sorted_refs[0]]]
         for ref in sorted_refs[1:]:
-            last_ref = groups[-1][-1]
-            pos_last = msg_positions.get(last_ref, 0)
+            first_ref = groups[-1][0]
+            pos_first = msg_positions.get(first_ref, 0)
             pos_curr = msg_positions.get(ref, 0)
-            if pos_curr - pos_last <= 2 * radius:
+            if pos_curr - pos_first <= 2 * radius:
                 groups[-1].append(ref)
             else:
                 groups.append([ref])
