@@ -22,12 +22,12 @@ DEFAULT_SYSTEM_PROMPT = """你是一个群聊摘要助手。请根据以下群�
 - 忽略无意义的闲聊和重复内容
 - 保持简洁，每个话题 1-2 句话
 - 在摘要中引用关键消息时，使用 [m:消息ID] 格式标注来源
-- 每个话题至少引用 1 条代表性消息的 ID"""
+- 每个话题必须引用 2-3 条不同发言人、不同时间点的代表性消息 ID"""
 
 DEFAULT_USER_PROMPT = """群聊消息：
 {messages}"""
 
-_REF_INSTRUCTION = "\n\n[重要] 在摘要中必须使用 [m:消息ID] 格式引用关键消息来源，每个话题至少引用1条。"
+_REF_INSTRUCTION = "\n\n[重要] 每个话题必须引用 2-3 条关键消息来源（不同发言人），使用 [m:消息ID] 格式。不要只引用1条。"
 
 _REF_PATTERN = re.compile(r"\[m:(\d+)\]")
 
@@ -125,7 +125,7 @@ class Summarizer:
 
     @staticmethod
     def _group_nearby_refs(ref_ids: list[int], messages: list[dict], radius: int) -> list[list[int]]:
-        """Groups referenced message IDs that are within 2*radius positions of each other."""
+        """Groups referenced message IDs that are within radius positions of each other."""
         if not ref_ids:
             return []
         msg_positions = {m["message_id"]: i for i, m in enumerate(messages)}
@@ -135,7 +135,7 @@ class Summarizer:
             first_ref = groups[-1][0]
             pos_first = msg_positions.get(first_ref, 0)
             pos_curr = msg_positions.get(ref, 0)
-            if pos_curr - pos_first <= 2 * radius:
+            if pos_curr - pos_first <= radius:
                 groups[-1].append(ref)
             else:
                 groups.append([ref])
@@ -170,6 +170,84 @@ class Summarizer:
             keep_ids.update(m["message_id"] for m in window_msgs)
         return keep_ids
 
+    @staticmethod
+    def _topic_has_refs(topic_text: str) -> bool:
+        """Checks whether a topic section already contains [m:ID] references."""
+        return bool(_REF_PATTERN.search(topic_text))
+
+    @staticmethod
+    def _split_topics(summary: str) -> list[tuple[str, str]]:
+        """Splits a summary into (header, body) pairs by numbered items.
+
+        Matches lines like "1. xxx" or "**1. xxx**" as topic headers.
+        Returns [(header_line, rest_of_topic), ...].
+        """
+        lines = summary.split("\n")
+        topics: list[tuple[str, str]] = []
+        current_header = ""
+        current_body_lines: list[str] = []
+        topic_re = re.compile(r"^\s*\*{0,2}\d+[.、）)]\s")
+
+        for line in lines:
+            if topic_re.match(line):
+                if current_header:
+                    topics.append((current_header, "\n".join(current_body_lines)))
+                current_header = line
+                current_body_lines = []
+            else:
+                current_body_lines.append(line)
+
+        if current_header:
+            topics.append((current_header, "\n".join(current_body_lines)))
+        return topics
+
+    def _supplement_references(self, summary: str, messages: list[dict]) -> tuple[str, list[int]]:
+        """Adds [m:ID] references to topics that have none, using keyword matching."""
+        topics = self._split_topics(summary)
+        if not topics:
+            return summary, self.parse_referenced_ids(summary)
+
+        changed = False
+        msg_by_id = {m["message_id"]: m for m in messages}
+
+        for i, (header, body) in enumerate(topics):
+            full_topic = header + "\n" + body
+            if self._topic_has_refs(full_topic):
+                continue
+
+            words = re.findall(r"[一-鿿]{2,}|[a-zA-Z]{3,}", full_topic)
+            if not words:
+                continue
+
+            scored: list[tuple[int, float]] = []
+            for msg in messages:
+                text_lower = (msg.get("text") or "").lower()
+                if not text_lower:
+                    continue
+                hits = sum(1 for w in words if w.lower() in text_lower)
+                if hits >= 2:
+                    scored.append((msg["message_id"], hits))
+
+            scored.sort(key=lambda x: -x[1])
+            top_refs = [sid for sid, _ in scored[:3]]
+
+            if not top_refs:
+                continue
+
+            ref_str = " ".join(f"[m:{rid}]" for rid in top_refs)
+            topics[i] = (header, body.rstrip() + "\n" + ref_str)
+            changed = True
+
+        if not changed:
+            return summary, self.parse_referenced_ids(summary)
+
+        rebuilt = []
+        for header, body in topics:
+            rebuilt.append(header)
+            rebuilt.append(body)
+        new_summary = "\n".join(rebuilt)
+        return new_summary, self.parse_referenced_ids(new_summary)
+
     async def _summarize_messages(self, messages: list[dict]) -> tuple[str, list[int]] | None:
         """Sends messages to the LLM and returns the summary text with referenced message IDs."""
         if not messages:
@@ -187,7 +265,7 @@ class Summarizer:
             if not summary:
                 return None
             summary = summary.strip()
-            ref_ids = self.parse_referenced_ids(summary)
+            summary, ref_ids = self._supplement_references(summary, messages)
             return (summary, ref_ids)
         except Exception as e:
             group_name = messages[0].get("group_name", "Unknown")
