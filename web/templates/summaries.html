@@ -198,6 +198,11 @@ document.querySelectorAll('.summary-text').forEach(el => {
         el.innerHTML = text;
     }
 
+    el.querySelectorAll('a').forEach(a => {
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+    });
+
     el.querySelectorAll('.ctx-placeholder').forEach(span => {
         const id = parseInt(span.dataset.msgId);
         const wid = windowMap[id];

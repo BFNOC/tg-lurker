@@ -504,14 +504,14 @@ class Database:
             cursor = await self.conn.execute(
                 """SELECT id, biz_date, biz_period, group_id, group_name, message_count, summary_text, created_at
                    FROM summaries WHERE biz_date = ? AND group_id = ?
-                   ORDER BY biz_period, group_id""",
+                   ORDER BY created_at DESC""",
                 (biz_date, group_id),
             )
         else:
             cursor = await self.conn.execute(
                 """SELECT id, biz_date, biz_period, group_id, group_name, message_count, summary_text, created_at
                    FROM summaries WHERE biz_date = ?
-                   ORDER BY biz_period, group_id""",
+                   ORDER BY created_at DESC""",
                 (biz_date,),
             )
         rows = await cursor.fetchall()
