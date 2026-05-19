@@ -55,6 +55,17 @@
         <div class="section-divider"></div>
 
         <div class="form-group">
+            <label for="filter_bots">过滤群机器人消息</label>
+            <select id="filter_bots" name="filter_bot_messages">
+                <option value="true" {% if settings.filter_bot_messages == "true" %}selected{% endif %}>已启用（默认）</option>
+                <option value="false" {% if settings.filter_bot_messages == "false" %}selected{% endif %}>已禁用</option>
+            </select>
+            <div class="form-hint">启用后自动忽略群内机器人（Bot）发送的消息，不采集、不入库</div>
+        </div>
+
+        <div class="section-divider"></div>
+
+        <div class="form-group">
             <label for="context_radius">上下文保留半径</label>
             <input type="number" id="context_radius" name="context_radius" value="{{ settings.context_radius }}" min="5" max="100">
             <div class="form-hint">摘要引用消息前后保留的消息条数（默认 30）</div>

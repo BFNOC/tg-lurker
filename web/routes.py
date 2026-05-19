@@ -627,6 +627,7 @@ async def settings_page(request: Request):
         "user_prompt": await db.get_setting("user_prompt", ""),
         "ad_keywords": await db.get_setting("ad_keywords", ""),
         "alert_keywords": await db.get_setting("alert_keywords", ""),
+        "filter_bot_messages": await db.get_setting("filter_bot_messages", "true"),
         "context_radius": await db.get_setting("context_radius", "30"),
         "context_max_rows": await db.get_setting("context_max_rows", "50000"),
     }
@@ -653,7 +654,7 @@ async def save_settings(request: Request):
     for key in ("summary_cron", "summary_retention_days", "tg_push_enabled",
                 "llm_base_url", "llm_api_key", "llm_model", "llm_api_format",
                 "system_prompt", "user_prompt", "ad_keywords", "alert_keywords",
-                "context_radius", "context_max_rows"):
+                "filter_bot_messages", "context_radius", "context_max_rows"):
         value = form.get(key, "")
         if key == "llm_api_key" and value.startswith("••••"):
             continue
@@ -675,6 +676,8 @@ async def save_settings(request: Request):
     bot = request.app.state.bot
     if bot and hasattr(bot, "_reload_alert_keywords"):
         await bot._reload_alert_keywords()
+    if bot and hasattr(bot, "_reload_filter_bots"):
+        await bot._reload_filter_bots()
 
     scheduler = request.app.state.scheduler
     if scheduler is not None:
@@ -696,6 +699,7 @@ async def save_settings(request: Request):
         "user_prompt": await db.get_setting("user_prompt", ""),
         "ad_keywords": await db.get_setting("ad_keywords", ""),
         "alert_keywords": await db.get_setting("alert_keywords", ""),
+        "filter_bot_messages": await db.get_setting("filter_bot_messages", "true"),
         "context_radius": await db.get_setting("context_radius", "30"),
         "context_max_rows": await db.get_setting("context_max_rows", "50000"),
     }

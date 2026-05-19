@@ -32,6 +32,7 @@ class Bot:
         self._alert_callback = None
         self._admin_cache: dict[tuple[int, int], tuple[bool, float]] = {}
         self._admin_cache_max = 1000
+        self._filter_bots = True
 
     @property
     def client(self) -> TelegramClient:
@@ -98,6 +99,7 @@ class Bot:
         await self._sync_groups()
         await self._rebuild_dedup()
         await self._reload_alert_keywords()
+        await self._reload_filter_bots()
 
         self._ready.set()
         logger.info("Initialization complete, processing messages")
@@ -131,6 +133,15 @@ class Bot:
         raw = await self._db.get_setting("alert_keywords", "")
         self._alert_keywords = [k.strip().lower() for k in raw.split("\n") if k.strip()]
         logger.info(f"Alert keywords loaded: {len(self._alert_keywords)}")
+
+    async def _reload_filter_bots(self) -> None:
+        """Reloads the bot message filter toggle from the settings table."""
+        raw = await self._db.get_setting("filter_bot_messages", "true")
+        normalized = raw.strip().lower()
+        if normalized not in ("true", "false"):
+            logger.warning(f"Invalid filter_bot_messages value '{raw}', defaulting to true")
+            normalized = "true"
+        self._filter_bots = normalized == "true"
 
     def set_alert_callback(self, callback) -> None:
         """Registers an async callback invoked when an alert keyword is matched."""
@@ -240,6 +251,16 @@ class Bot:
 
         if message.sender_id and await self._db.is_sender_blocked(message.sender_id):
             return
+
+        if self._filter_bots:
+            sender = message.sender
+            if sender is None and message.sender_id:
+                try:
+                    sender = await message.get_sender()
+                except Exception as e:
+                    logger.debug(f"Failed to get sender for bot check: {e}")
+            if getattr(sender, "bot", False):
+                return
 
         if not self._dedup.check_and_add(text):
             return
