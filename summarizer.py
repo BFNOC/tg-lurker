@@ -142,12 +142,42 @@ class Summarizer:
         return groups
 
     async def _create_context_windows(
-        self, summary_id: int, group_id: int, ref_ids: list[int], messages: list[dict], context_radius: int
+        self, summary_id: int, group_id: int, ref_ids: list[int], messages: list[dict], context_radius: int,
+        summary_text: str = "",
     ) -> set[int]:
-        """Creates context windows around referenced messages and returns the set of kept message IDs."""
+        """Creates context windows around referenced messages, grouped by topic."""
         valid_msg_ids = {m["message_id"] for m in messages}
         valid_refs = [r for r in ref_ids if r in valid_msg_ids]
-        ref_groups = self._group_nearby_refs(valid_refs, messages, context_radius)
+
+        if summary_text:
+            topics = self._split_topics(summary_text)
+            topic_ref_groups: list[list[int]] = []
+            assigned_refs: set[int] = set()
+            boundary_refs: set[int] = set()
+            for _header, body in topics:
+                if not _header:
+                    boundary_refs.update(
+                        int(m.group(1))
+                        for m in _REF_PATTERN.finditer(body)
+                        if int(m.group(1)) in valid_msg_ids
+                    )
+                    continue
+                topic_full = _header + "\n" + body
+                topic_refs = [
+                    int(m.group(1))
+                    for m in _REF_PATTERN.finditer(topic_full)
+                    if int(m.group(1)) in valid_msg_ids
+                ]
+                if topic_refs:
+                    topic_ref_groups.extend(self._group_nearby_refs(topic_refs, messages, context_radius))
+                    assigned_refs.update(topic_refs)
+            unassigned = [r for r in valid_refs if r not in assigned_refs and r not in boundary_refs]
+            if unassigned:
+                topic_ref_groups.extend(self._group_nearby_refs(unassigned, messages, context_radius))
+            ref_groups = topic_ref_groups if topic_ref_groups else self._group_nearby_refs(valid_refs, messages, context_radius)
+        else:
+            ref_groups = self._group_nearby_refs(valid_refs, messages, context_radius)
+
         keep_ids: set[int] = set()
         for group in ref_groups:
             primary_ref = group[0]
@@ -179,25 +209,30 @@ class Summarizer:
     def _split_topics(summary: str) -> list[tuple[str, str]]:
         """Splits a summary into (header, body) pairs by numbered items.
 
-        Matches lines like "1. xxx" or "**1. xxx**" as topic headers.
+        Matches lines like "1. xxx", "**1. xxx**", or "### 1. xxx" as topic headers.
+        Also treats non-topic section headers (e.g. "重要链接") as boundaries.
         Returns [(header_line, rest_of_topic), ...].
         """
         lines = summary.split("\n")
         topics: list[tuple[str, str]] = []
         current_header = ""
         current_body_lines: list[str] = []
-        topic_re = re.compile(r"^\s*\*{0,2}\d+[.、）)]\s")
+        topic_re = re.compile(r"^\s*#{0,6}\s*\*{0,2}\d+[.、）)]\s")
+        section_re = re.compile(
+            r"^\s*(?:#{1,6}\s+)?(?:[-*]\s+)?\*{0,2}(重要链接|关键链接|链接|参考链接|总结|结论)[：:]?\s*\*{0,2}\s*$",
+            re.IGNORECASE,
+        )
 
         for line in lines:
-            if topic_re.match(line):
-                if current_header:
+            if topic_re.match(line) or section_re.match(line):
+                if current_header or current_body_lines:
                     topics.append((current_header, "\n".join(current_body_lines)))
-                current_header = line
+                current_header = line if topic_re.match(line) else ""
                 current_body_lines = []
             else:
                 current_body_lines.append(line)
 
-        if current_header:
+        if current_header or current_body_lines:
             topics.append((current_header, "\n".join(current_body_lines)))
         return topics
 
@@ -210,6 +245,8 @@ class Summarizer:
         changed = False
 
         for i, (header, body) in enumerate(topics):
+            if not header:
+                continue
             full_topic = header + "\n" + body
             if self._topic_has_refs(full_topic):
                 continue
@@ -245,8 +282,11 @@ class Summarizer:
 
         rebuilt = []
         for header, body in topics:
-            rebuilt.append(header)
-            rebuilt.append(body)
+            if not header:
+                rebuilt.append(body)
+            else:
+                rebuilt.append(header)
+                rebuilt.append(body)
         new_summary = "\n".join(rebuilt)
         return new_summary, self.parse_referenced_ids(new_summary)
 
@@ -327,7 +367,7 @@ class Summarizer:
                 return None
 
             context_radius = await self._get_context_radius()
-            await self._create_context_windows(summary_id, group_id, ref_ids, messages, context_radius)
+            await self._create_context_windows(summary_id, group_id, ref_ids, messages, context_radius, summary)
 
             await self._cleanup_expired()
             return {
@@ -412,7 +452,7 @@ class Summarizer:
             if summary_id is None:
                 continue
 
-            keep_ids = await self._create_context_windows(summary_id, group_id, ref_ids, messages, context_radius)
+            keep_ids = await self._create_context_windows(summary_id, group_id, ref_ids, messages, context_radius, summary)
 
             results["groups"].append({
                 "name": group_name,
