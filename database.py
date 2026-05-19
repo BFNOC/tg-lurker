@@ -103,11 +103,16 @@ CREATE INDEX IF NOT EXISTS idx_alerts_created ON alerts(created_at);
 
 
 class Database:
+    """Async SQLite wrapper for tg-lurker storage."""
+
     def __init__(self, db_path: str):
+        """Initializes database with path to SQLite file."""
         self._path = db_path
         self._conn: aiosqlite.Connection | None = None
+        self._temp_table_counter = 0
 
     async def connect(self) -> None:
+        """Opens connection, applies schema, and runs migrations."""
         Path(self._path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = await aiosqlite.connect(self._path)
         await self._conn.execute("PRAGMA journal_mode=WAL")
@@ -118,6 +123,7 @@ class Database:
         await self._migrate()
 
     async def _migrate(self) -> None:
+        """Applies incremental schema changes for new columns and indexes."""
         await self._ensure_column(
             "monitored_groups",
             "summary_cron",
@@ -154,6 +160,7 @@ class Database:
         await self.conn.commit()
 
     async def _ensure_column(self, table: str, column: str, ddl: str) -> None:
+        """Adds column to table if it doesn't already exist."""
         cursor = await self.conn.execute(f"PRAGMA table_info({table})")
         rows = await cursor.fetchall()
         if any(row[1] == column for row in rows):
@@ -214,12 +221,14 @@ class Database:
             await self.conn.execute("PRAGMA foreign_keys=ON")
 
     async def close(self) -> None:
+        """Closes the database connection."""
         if self._conn:
             await self._conn.close()
             self._conn = None
 
     @property
     def conn(self) -> aiosqlite.Connection:
+        """Returns active connection, raising if not connected."""
         assert self._conn is not None, "Database not connected"
         return self._conn
 
@@ -236,6 +245,7 @@ class Database:
         timestamp: int,
         biz_date: str,
     ) -> bool:
+        """Inserts a message, ignoring duplicates by (group_id, message_id). Returns True if inserted."""
         import sqlite3
         try:
             cursor = await self.conn.execute(
@@ -253,6 +263,7 @@ class Database:
         self, biz_date: str, group_id: int | None = None,
         limit: int = 0, offset: int = 0,
     ) -> list[dict]:
+        """Fetches messages for a business date, optionally filtered by group, ordered by message_id DESC."""
         params: list = []
         sql = """SELECT group_id, group_name, message_id, sender_id, sender_name, text, timestamp
                  FROM messages WHERE biz_date = ?"""
@@ -284,6 +295,7 @@ class Database:
         ]
 
     async def get_messages_since(self, group_id: int, since_ts: int, before_ts: int | None = None) -> list[dict]:
+        """Fetches messages in a group after a timestamp, optionally bounded by an upper timestamp."""
         params: list[int] = [group_id, since_ts]
         upper = ""
         if before_ts is not None:
@@ -311,6 +323,7 @@ class Database:
         ]
 
     async def get_message_count_by_date(self, biz_date: str, group_id: int | None = None) -> int:
+        """Returns total message count for a business date, optionally filtered by group."""
         if group_id is not None:
             cursor = await self.conn.execute(
                 "SELECT COUNT(*) FROM messages WHERE biz_date = ? AND group_id = ?",
@@ -324,6 +337,7 @@ class Database:
         return row[0] if row else 0
 
     async def delete_messages_by_date(self, biz_date: str, before_timestamp: int | None = None) -> int:
+        """Deletes messages for a business date, optionally only those at or before a timestamp. Returns count deleted."""
         if before_timestamp is not None:
             cursor = await self.conn.execute(
                 "DELETE FROM messages WHERE biz_date = ? AND timestamp <= ?",
@@ -337,6 +351,7 @@ class Database:
         return cursor.rowcount
 
     async def get_last_message_id(self, group_id: int) -> int | None:
+        """Returns the highest message_id for a group, or None if no messages exist."""
         cursor = await self.conn.execute(
             "SELECT MAX(message_id) FROM messages WHERE group_id = ?",
             (group_id,),
@@ -345,6 +360,7 @@ class Database:
         return row[0] if row and row[0] is not None else None
 
     async def get_message_texts_by_date(self, biz_date: str) -> list[str]:
+        """Returns raw text of all messages for a business date."""
         cursor = await self.conn.execute(
             "SELECT text FROM messages WHERE biz_date = ?", (biz_date,)
         )
@@ -352,6 +368,7 @@ class Database:
         return [r[0] for r in rows]
 
     async def get_today_message_count(self, biz_date: str) -> int:
+        """Returns total message count across all groups for a business date."""
         cursor = await self.conn.execute(
             "SELECT COUNT(*) FROM messages WHERE biz_date = ?", (biz_date,)
         )
@@ -414,6 +431,7 @@ class Database:
         return [{"sender_id": r[0], "sender_name": r[1], "count": r[2]} for r in rows]
 
     async def get_unsummarized_dates(self) -> list[dict]:
+        """Returns business dates that have messages but no auto-generated summary."""
         cursor = await self.conn.execute(
             """SELECT m.biz_date, COUNT(*) as msg_count
                FROM messages m
@@ -437,6 +455,7 @@ class Database:
         summary_text: str,
         biz_period: str = "daily",
     ) -> int | None:
+        """Inserts a summary row, returning its id. Returns None on duplicate (biz_date, group_id, biz_period)."""
         try:
             cursor = await self.conn.execute(
                 """INSERT INTO summaries
@@ -459,6 +478,7 @@ class Database:
             raise
 
     async def summary_exists(self, biz_date: str, group_id: int, biz_period: str) -> bool:
+        """Checks whether a summary exists for the given date, group, and period."""
         cursor = await self.conn.execute(
             """SELECT 1 FROM summaries
                WHERE biz_date = ? AND group_id = ? AND biz_period = ?
@@ -468,6 +488,7 @@ class Database:
         return await cursor.fetchone() is not None
 
     async def get_last_summary_ts(self, group_id: int) -> int | None:
+        """Returns the creation timestamp of the most recent summary for a group."""
         cursor = await self.conn.execute(
             "SELECT MAX(created_at) FROM summaries WHERE group_id = ?",
             (group_id,),
@@ -478,6 +499,7 @@ class Database:
     async def get_summaries_by_date(
         self, biz_date: str, group_id: int | None = None
     ) -> list[dict]:
+        """Fetches summaries for a business date, optionally filtered by group."""
         if group_id is not None:
             cursor = await self.conn.execute(
                 """SELECT id, biz_date, biz_period, group_id, group_name, message_count, summary_text, created_at
@@ -508,6 +530,7 @@ class Database:
         ]
 
     async def get_available_dates(self, limit: int = 30) -> list[str]:
+        """Returns distinct business dates that have summaries, most recent first."""
         cursor = await self.conn.execute(
             "SELECT DISTINCT biz_date FROM summaries ORDER BY biz_date DESC LIMIT ?",
             (limit,),
@@ -582,6 +605,7 @@ class Database:
         return result
 
     async def delete_expired_summaries(self, cutoff_date: str) -> int:
+        """Deletes summaries older than cutoff_date. Returns count deleted."""
         cursor = await self.conn.execute(
             "DELETE FROM summaries WHERE biz_date < ?", (cutoff_date,)
         )
@@ -591,6 +615,7 @@ class Database:
     # --- monitored_groups ---
 
     async def upsert_group(self, group_id: int, group_name: str) -> None:
+        """Inserts or updates a monitored group's name."""
         await self.conn.execute(
             """INSERT INTO monitored_groups (group_id, group_name)
                VALUES (?, ?)
@@ -600,6 +625,7 @@ class Database:
         await self.conn.commit()
 
     async def get_active_groups(self) -> list[dict]:
+        """Returns all active monitored groups."""
         cursor = await self.conn.execute(
             "SELECT group_id, group_name FROM monitored_groups WHERE is_active = 1"
         )
@@ -607,6 +633,7 @@ class Database:
         return [{"group_id": r[0], "group_name": r[1]} for r in rows]
 
     async def get_custom_cron_groups(self) -> list[dict]:
+        """Returns active groups that have a custom summary cron schedule."""
         cursor = await self.conn.execute(
             """SELECT group_id, group_name, summary_cron
                FROM monitored_groups
@@ -617,6 +644,7 @@ class Database:
         return [{"group_id": r[0], "group_name": r[1], "summary_cron": r[2]} for r in rows]
 
     async def get_default_cron_groups(self) -> list[dict]:
+        """Returns active groups that use the default (global) summary cron."""
         cursor = await self.conn.execute(
             """SELECT group_id, group_name
                FROM monitored_groups
@@ -627,6 +655,7 @@ class Database:
         return [{"group_id": r[0], "group_name": r[1]} for r in rows]
 
     async def get_context_message_ids_for_group_date(self, biz_date: str, group_id: int) -> set[int]:
+        """Returns message IDs already stored in context windows for a group and date."""
         cursor = await self.conn.execute(
             """SELECT DISTINCT cm.message_id
                FROM context_messages cm
@@ -639,6 +668,7 @@ class Database:
         return {r[0] for r in rows}
 
     async def toggle_group(self, group_id: int, is_active: bool) -> None:
+        """Enables or disables monitoring for a group."""
         await self.conn.execute(
             "UPDATE monitored_groups SET is_active = ? WHERE group_id = ?",
             (1 if is_active else 0, group_id),
@@ -646,6 +676,7 @@ class Database:
         await self.conn.commit()
 
     async def list_all_groups(self) -> list[dict]:
+        """Returns all monitored groups with their active status and custom cron."""
         cursor = await self.conn.execute(
             "SELECT group_id, group_name, is_active, summary_cron FROM monitored_groups ORDER BY group_name"
         )
@@ -656,6 +687,7 @@ class Database:
         ]
 
     async def list_groups_with_activity(self) -> list[dict]:
+        """Returns all groups joined with summary activity stats (avg daily messages, last summary time)."""
         cursor = await self.conn.execute(
             """SELECT g.group_id,
                       g.group_name,
@@ -692,6 +724,7 @@ class Database:
         ]
 
     async def update_group_summary_cron(self, group_id: int, summary_cron: str | None) -> None:
+        """Sets a custom summary cron for a group. None or empty string resets to default."""
         value = summary_cron.strip() if summary_cron else None
         if value == "":
             value = None
@@ -704,6 +737,7 @@ class Database:
     # --- settings ---
 
     async def get_setting(self, key: str, default: str = "") -> str:
+        """Returns a setting value by key, or default if not found."""
         cursor = await self.conn.execute(
             "SELECT value FROM settings WHERE key = ?", (key,)
         )
@@ -711,6 +745,7 @@ class Database:
         return row[0] if row else default
 
     async def set_setting(self, key: str, value: str) -> None:
+        """Inserts or replaces a setting key-value pair."""
         await self.conn.execute(
             "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
             (key, value),
@@ -720,6 +755,7 @@ class Database:
     # --- blocked_senders ---
 
     async def block_sender(self, sender_id: int, sender_name: str | None = None, reason: str = "ad") -> None:
+        """Blocks a sender, replacing any existing block entry."""
         await self.conn.execute(
             """INSERT OR REPLACE INTO blocked_senders (sender_id, sender_name, reason)
                VALUES (?, ?, ?)""",
@@ -728,18 +764,21 @@ class Database:
         await self.conn.commit()
 
     async def unblock_sender(self, sender_id: int) -> None:
+        """Removes a sender from the blocklist."""
         await self.conn.execute(
             "DELETE FROM blocked_senders WHERE sender_id = ?", (sender_id,)
         )
         await self.conn.commit()
 
     async def is_sender_blocked(self, sender_id: int) -> bool:
+        """Checks whether a sender is in the blocklist."""
         cursor = await self.conn.execute(
             "SELECT 1 FROM blocked_senders WHERE sender_id = ?", (sender_id,)
         )
         return await cursor.fetchone() is not None
 
     async def get_blocked_senders(self) -> list[dict]:
+        """Returns all blocked senders ordered by most recently blocked."""
         cursor = await self.conn.execute(
             "SELECT sender_id, sender_name, reason, blocked_at FROM blocked_senders ORDER BY blocked_at DESC"
         )
@@ -760,6 +799,7 @@ class Database:
         keywords: str,
         message_text: str,
     ) -> None:
+        """Records a keyword-triggered alert."""
         await self.conn.execute(
             """INSERT INTO alerts (group_id, group_name, sender_id, sender_name, keywords, message_text)
                VALUES (?, ?, ?, ?, ?, ?)""",
@@ -768,6 +808,7 @@ class Database:
         await self.conn.commit()
 
     async def get_alerts(self, limit: int = 50, offset: int = 0) -> list[dict]:
+        """Fetches alerts in reverse chronological order with pagination."""
         cursor = await self.conn.execute(
             """SELECT id, group_name, sender_name, keywords, message_text, created_at
                FROM alerts ORDER BY created_at DESC LIMIT ? OFFSET ?""",
@@ -787,6 +828,7 @@ class Database:
         ]
 
     async def get_alert_count(self) -> int:
+        """Returns total number of alerts."""
         cursor = await self.conn.execute("SELECT COUNT(*) FROM alerts")
         row = await cursor.fetchone()
         return row[0] if row else 0
@@ -794,6 +836,7 @@ class Database:
     # --- context windows ---
 
     async def insert_context_window(self, summary_id: int, group_id: int, ref_message_id: int, covered_refs: list[int] | None = None) -> int:
+        """Creates a context window linked to a summary. Returns the new window id."""
         import json
         covered_json = json.dumps(covered_refs) if covered_refs else None
         cursor = await self.conn.execute(
@@ -804,6 +847,7 @@ class Database:
         return cursor.lastrowid
 
     async def insert_context_messages(self, window_id: int, messages: list[dict]) -> None:
+        """Bulk-inserts messages into a context window, ignoring duplicates."""
         await self.conn.executemany(
             """INSERT OR IGNORE INTO context_messages
                (window_id, group_id, message_id, sender_name, text, timestamp)
@@ -816,6 +860,7 @@ class Database:
         await self.conn.commit()
 
     async def get_context_windows_by_summary(self, summary_id: int) -> list[dict]:
+        """Returns context windows for a summary with decoded covered_refs."""
         import json
         cursor = await self.conn.execute(
             "SELECT id, group_id, ref_message_id, covered_refs FROM context_windows WHERE summary_id = ?",
@@ -832,6 +877,7 @@ class Database:
         return results
 
     async def get_context_messages(self, window_id: int) -> list[dict]:
+        """Returns messages in a context window ordered by message_id."""
         cursor = await self.conn.execute(
             """SELECT message_id, sender_name, text, timestamp
                FROM context_messages WHERE window_id = ?
@@ -845,6 +891,7 @@ class Database:
         ]
 
     async def touch_summary(self, summary_id: int) -> None:
+        """Updates last_accessed_at to current time for LRU eviction tracking."""
         import time
         await self.conn.execute(
             "UPDATE summaries SET last_accessed_at = ? WHERE id = ?",
@@ -853,6 +900,7 @@ class Database:
         await self.conn.commit()
 
     async def get_messages_around(self, group_id: int, center_message_id: int, radius: int) -> list[dict]:
+        """Returns messages surrounding a center message within a radius, ordered by message_id."""
         before_cursor = await self.conn.execute(
             """SELECT group_id, message_id, sender_name, text, timestamp
                FROM messages
@@ -880,6 +928,7 @@ class Database:
     async def delete_messages_except_context(
         self, biz_date: str, before_timestamp: int | None, keep_message_ids: set[int], group_id: int
     ) -> int:
+        """Deletes messages for a group/date, preserving those in keep_message_ids. Returns count deleted."""
         if not keep_message_ids:
             if before_timestamp is not None:
                 cursor = await self.conn.execute(
@@ -891,31 +940,51 @@ class Database:
                     "DELETE FROM messages WHERE biz_date = ? AND group_id = ?",
                     (biz_date, group_id),
                 )
-        else:
-            placeholders = ",".join("?" * len(keep_message_ids))
+            await self.conn.commit()
+            return cursor.rowcount
+
+        self._temp_table_counter += 1
+        table_name = f"_keep_ids_{self._temp_table_counter}"
+        await self.conn.execute(f"CREATE TEMP TABLE {table_name} (message_id INTEGER PRIMARY KEY)")
+        try:
+            batch_size = 900
+            keep_list = [(int(mid),) for mid in keep_message_ids]
+            for i in range(0, len(keep_list), batch_size):
+                await self.conn.executemany(
+                    f"INSERT OR IGNORE INTO {table_name} (message_id) VALUES (?)",
+                    keep_list[i:i + batch_size],
+                )
+
             if before_timestamp is not None:
                 cursor = await self.conn.execute(
-                    f"DELETE FROM messages WHERE biz_date = ? AND group_id = ? AND timestamp <= ? AND message_id NOT IN ({placeholders})",
-                    (biz_date, group_id, before_timestamp, *keep_message_ids),
+                    f"""DELETE FROM messages WHERE biz_date = ? AND group_id = ? AND timestamp <= ?
+                       AND message_id NOT IN (SELECT message_id FROM {table_name})""",
+                    (biz_date, group_id, before_timestamp),
                 )
             else:
                 cursor = await self.conn.execute(
-                    f"DELETE FROM messages WHERE biz_date = ? AND group_id = ? AND message_id NOT IN ({placeholders})",
-                    (biz_date, group_id, *keep_message_ids),
+                    f"""DELETE FROM messages WHERE biz_date = ? AND group_id = ?
+                       AND message_id NOT IN (SELECT message_id FROM {table_name})""",
+                    (biz_date, group_id),
                 )
-        await self.conn.commit()
-        return cursor.rowcount
+            await self.conn.commit()
+            return cursor.rowcount
+        finally:
+            await self.conn.execute(f"DROP TABLE IF EXISTS {table_name}")
 
     async def get_context_storage_count(self) -> int:
+        """Returns total number of context messages across all windows."""
         cursor = await self.conn.execute("SELECT COUNT(*) FROM context_messages")
         row = await cursor.fetchone()
         return row[0] if row else 0
 
     async def cleanup_lru_contexts(self, max_rows: int) -> int:
+        """Evicts oldest-accessed context windows until total rows are within max_rows. Returns count deleted."""
         total = await self.get_context_storage_count()
         if total <= max_rows:
             return 0
         deleted = 0
+        processed_ids: set[int] = set()
         while total > max_rows:
             cursor = await self.conn.execute(
                 """SELECT id FROM summaries
@@ -926,6 +995,9 @@ class Database:
             if not row:
                 break
             summary_id = row[0]
+            if summary_id in processed_ids:
+                break
+            processed_ids.add(summary_id)
             count_cursor = await self.conn.execute(
                 """SELECT COUNT(*) FROM context_messages
                    WHERE window_id IN (SELECT id FROM context_windows WHERE summary_id = ?)""",

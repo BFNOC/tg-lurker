@@ -17,7 +17,10 @@ logger = logging.getLogger(__name__)
 
 
 class Bot:
+    """Manages the Telegram userbot connection, message collection, and alert dispatch."""
+
     def __init__(self, config: Config, db: Database, dedup: DedupEngine) -> None:
+        """Initializes the bot with config, database, and dedup engine."""
         self._config = config
         self._db = db
         self._dedup = dedup
@@ -28,17 +31,21 @@ class Bot:
         self._alert_keywords: list[str] = []
         self._alert_callback = None
         self._admin_cache: dict[tuple[int, int], tuple[bool, float]] = {}
+        self._admin_cache_max = 1000
 
     @property
     def client(self) -> TelegramClient:
+        """Returns the underlying Telethon client."""
         assert self._client is not None
         return self._client
 
     @property
     def is_connected(self) -> bool:
+        """Reports whether the Telegram client is connected."""
         return self._client is not None and self._client.is_connected()
 
     def _build_proxy(self) -> tuple | None:
+        """Builds a PySocks proxy tuple from config, or None if no proxy is set."""
         if not self._config.proxy_type or not self._config.proxy_host:
             return None
         import socks
@@ -53,6 +60,7 @@ class Bot:
         return (proxy_type, self._config.proxy_host, self._config.proxy_port)
 
     async def start(self) -> None:
+        """Connects to Telegram, syncs groups, and begins processing messages."""
         proxy = self._build_proxy()
         self._client = TelegramClient(
             self._config.session_path,
@@ -98,6 +106,7 @@ class Bot:
         logger.info("Catch-up dispatched")
 
     async def _sync_groups(self) -> None:
+        """Syncs all joined Telegram groups and channels to the database."""
         async for dialog in self._client.iter_dialogs():
             entity = dialog.entity
             if isinstance(entity, (Channel, Chat)):
@@ -105,6 +114,7 @@ class Bot:
         logger.info("Groups synced to database")
 
     async def _rebuild_dedup(self) -> None:
+        """Rebuilds the dedup engine with today's messages and the current ad-keyword blocklist."""
         biz_date = self._current_biz_date()
         texts = await self._db.get_message_texts_by_date(biz_date)
         self._dedup.rebuild_from_texts(texts)
@@ -117,14 +127,21 @@ class Bot:
         logger.info(f"Dedup rebuilt with {len(texts)} messages, {len(self._dedup._keyword_blocklist)} keywords")
 
     async def _reload_alert_keywords(self) -> None:
+        """Reloads alert keywords from the settings table."""
         raw = await self._db.get_setting("alert_keywords", "")
         self._alert_keywords = [k.strip().lower() for k in raw.split("\n") if k.strip()]
         logger.info(f"Alert keywords loaded: {len(self._alert_keywords)}")
 
     def set_alert_callback(self, callback) -> None:
+        """Registers an async callback invoked when an alert keyword is matched."""
         self._alert_callback = callback
 
     async def _check_alert(self, message, group_name: str, text: str) -> None:
+        """Checks a message against alert keywords and notifies if the sender is an admin.
+
+        Admin status is cached for 5 minutes per (chat_id, sender_id) pair to avoid
+        repeated Telegram API calls. FloodWait errors cause the alert to be silently skipped.
+        """
         if not self._alert_keywords or not self._alert_callback:
             return
 
@@ -154,6 +171,13 @@ class Bot:
             except Exception as e:
                 logger.debug(f"Permission check failed for {message.sender_id}: {e}")
                 return
+            if len(self._admin_cache) >= self._admin_cache_max:
+                expired = [k for k, (_, ts) in self._admin_cache.items() if now - ts >= 300]
+                for k in expired:
+                    del self._admin_cache[k]
+                if len(self._admin_cache) >= self._admin_cache_max:
+                    oldest_key = min(self._admin_cache, key=lambda k: self._admin_cache[k][1])
+                    del self._admin_cache[oldest_key]
             self._admin_cache[cache_key] = (is_admin, now)
 
         if not is_admin:
@@ -185,8 +209,10 @@ class Bot:
             logger.error(f"Alert send failed: {e}")
 
     def _register_handler(self) -> None:
+        """Registers the Telethon NewMessage event handler."""
         @self._client.on(events.NewMessage)
         async def handler(event):
+            """Filters incoming messages to active groups and delegates to _process_message."""
             await self._ready.wait()
             chat = await event.get_chat()
             if not isinstance(chat, (Channel, Chat)):
@@ -200,6 +226,11 @@ class Bot:
             await self._process_message(event.message, group_name)
 
     async def _process_message(self, message, group_name: str) -> None:
+        """Processes a single Telegram message: deduplicates, checks alerts, and persists it.
+
+        If the database insert fails, the dedup hash is rolled back so the message
+        can be retried on the next encounter.
+        """
         if not message.text:
             return
 
@@ -232,12 +263,14 @@ class Bot:
             biz_date=biz_date,
         )
         if not inserted:
-            self._dedup._hashes.discard(__import__("dedup").text_hash(text))
+            self._dedup.remove_hash(text)
 
     def _current_biz_date(self) -> str:
+        """Returns the current business date in YYYY-MM-DD format using the configured timezone."""
         return datetime.now(self._tz).strftime("%Y-%m-%d")
 
     async def stop(self) -> None:
+        """Disconnects the Telegram client and stops the bot."""
         if not self._running:
             return
         self._running = False
@@ -247,6 +280,10 @@ class Bot:
         logger.info("Bot stopped")
 
     async def fetch_messages_around(self, group_id: int, message_id: int, radius: int) -> list[dict]:
+        """Fetches messages within a radius of a given message ID from Telegram.
+
+        Raises RuntimeError on FloodWait to let the caller decide on retry timing.
+        """
         try:
             entity = await self._client.get_entity(group_id)
             ids = list(range(max(1, message_id - radius), message_id + radius + 1))

@@ -34,37 +34,44 @@ FREQUENCY_LABELS = {
 
 
 def _require_auth(request: Request):
+    """Redirects to /login if the request is not authenticated."""
     if not is_authenticated(request):
         return RedirectResponse("/login", status_code=303)
     return None
 
 
 def _csrf_context(request: Request) -> dict:
+    """Returns a template context dict containing the CSRF token."""
     return {"csrf_token": get_csrf_token(request)}
 
 
 async def _require_csrf(request: Request):
+    """Returns a 403 response if the CSRF token is invalid."""
     if not await verify_csrf(request):
         return HTMLResponse("<p style='color:var(--danger)'>CSRF token invalid</p>", status_code=403)
     return None
 
 
 def _current_biz_date(request: Request) -> str:
+    """Returns today's business date in the configured timezone."""
     config = request.app.state.config
     return datetime.now(ZoneInfo(config.tz)).strftime("%Y-%m-%d")
 
 
 def _parse_optional_group_id(request: Request) -> int | None:
+    """Parses an optional group_id query parameter."""
     group_id = request.query_params.get("group_id", "")
     return int(group_id) if group_id else None
 
 
 def _safe_filename_part(name: str) -> str:
+    """Sanitizes a string for use as a filename component."""
     safe_name = re.sub(r"[/\\<>:\"|?*\x00-\x1f]", "_", name).strip("_")
     return safe_name or "summary"
 
 
 def _summary_filename(summary: dict) -> str:
+    """Generates a safe .md filename for a summary export."""
     safe_name = _safe_filename_part(summary["group_name"])
     biz_period = summary.get("biz_period", "daily")
     period_part = "" if biz_period == "daily" else f"-{_safe_filename_part(biz_period)}"
@@ -72,17 +79,20 @@ def _summary_filename(summary: dict) -> str:
 
 
 def _download_headers(filename: str) -> dict:
+    """Returns HTTP headers for a file download with RFC 5987 encoded filename."""
     from urllib.parse import quote
     encoded = quote(filename, safe="")
     return {"Content-Disposition": f"attachment; filename*=UTF-8''{encoded}"}
 
 
 def _escape_markdown_table_cell(value) -> str:
+    """Escapes a value for safe inclusion in a Markdown table cell."""
     text = "" if value is None else str(value)
     return text.replace("|", r"\|").replace("\r\n", "<br>").replace("\n", "<br>").replace("\r", "<br>")
 
 
 def _format_biz_period(biz_period: str | None) -> str:
+    """Returns a human-readable label for a business period string."""
     if not biz_period or biz_period == "daily":
         return "每日摘要"
     if biz_period.startswith("manual_"):
@@ -91,6 +101,7 @@ def _format_biz_period(biz_period: str | None) -> str:
 
 
 def _activity_class(avg_daily_messages: float) -> str:
+    """Maps an average daily message count to a CSS activity class."""
     if avg_daily_messages < 100:
         return "activity-low"
     if avg_daily_messages < 500:
@@ -101,6 +112,7 @@ def _activity_class(avg_daily_messages: float) -> str:
 
 
 def _frequency_mode(summary_cron: str | None) -> str:
+    """Determines the frequency mode key for a given cron expression."""
     if not summary_cron:
         return "default"
     for mode, cron in FREQUENCY_PRESETS.items():
@@ -110,6 +122,7 @@ def _frequency_mode(summary_cron: str | None) -> str:
 
 
 async def _groups_template_context(request: Request) -> dict:
+    """Builds the template context for the groups page, including activity and frequency data."""
     db = request.app.state.db
     config = request.app.state.config
     global_cron = await db.get_setting("summary_cron", config.summary_cron)
@@ -131,6 +144,7 @@ async def _groups_template_context(request: Request) -> dict:
 
 
 def _render_summary_markdown(summary: dict, tz: ZoneInfo) -> str:
+    """Renders a summary with its context windows into a Markdown string."""
     created_at = datetime.fromtimestamp(summary["created_at"], tz).strftime("%Y-%m-%d %H:%M:%S")
     period_label = _format_biz_period(summary.get("biz_period", "daily"))
     lines = [
@@ -169,6 +183,7 @@ def _render_summary_markdown(summary: dict, tz: ZoneInfo) -> str:
 
 
 def _markdown_download_response(summary: dict, tz: ZoneInfo) -> StreamingResponse:
+    """Returns a StreamingResponse that downloads a summary as a Markdown file."""
     markdown = _render_summary_markdown(summary, tz).encode("utf-8")
     return StreamingResponse(
         io.BytesIO(markdown),
@@ -179,6 +194,7 @@ def _markdown_download_response(summary: dict, tz: ZoneInfo) -> StreamingRespons
 
 @router.get("/")
 async def index(request: Request):
+    """Redirects authenticated users to /dashboard."""
     redirect = _require_auth(request)
     if redirect:
         return redirect
@@ -187,6 +203,7 @@ async def index(request: Request):
 
 @router.get("/help")
 async def help_page(request: Request):
+    """Renders the help page."""
     redirect = _require_auth(request)
     if redirect:
         return redirect
@@ -195,6 +212,7 @@ async def help_page(request: Request):
 
 @router.get("/alerts")
 async def alerts_page(request: Request):
+    """Renders the paginated alerts page."""
     redirect = _require_auth(request)
     if redirect:
         return redirect
@@ -217,6 +235,7 @@ async def alerts_page(request: Request):
 
 @router.post("/messages/block-sender")
 async def block_sender(request: Request):
+    """Blocks a sender and returns an inline status snippet for HTMX."""
     redirect = _require_auth(request)
     if redirect:
         return redirect
@@ -237,6 +256,7 @@ async def block_sender(request: Request):
 
 @router.post("/messages/unblock-sender")
 async def unblock_sender(request: Request):
+    """Unblocks a sender and returns an inline status snippet for HTMX."""
     redirect = _require_auth(request)
     if redirect:
         return redirect
@@ -256,6 +276,7 @@ async def unblock_sender(request: Request):
 
 @router.get("/messages")
 async def messages_page(request: Request):
+    """Renders the paginated message browser with date/group filters."""
     redirect = _require_auth(request)
     if redirect:
         return redirect
@@ -301,6 +322,7 @@ async def messages_page(request: Request):
 
 @router.get("/dashboard")
 async def dashboard(request: Request):
+    """Renders the main dashboard with today's stats and group overview."""
     redirect = _require_auth(request)
     if redirect:
         return redirect
@@ -333,6 +355,7 @@ async def dashboard(request: Request):
 
 @router.get("/stats")
 async def stats_page(request: Request):
+    """Renders the statistics page shell (data loaded via API calls)."""
     redirect = _require_auth(request)
     if redirect:
         return redirect
@@ -341,6 +364,7 @@ async def stats_page(request: Request):
 
 @router.get("/api/stats/today-groups")
 async def api_today_groups(request: Request):
+    """Returns today's per-group message stats as JSON."""
     redirect = _require_auth(request)
     if redirect:
         return redirect
@@ -352,6 +376,7 @@ async def api_today_groups(request: Request):
 
 @router.get("/api/stats/hourly")
 async def api_hourly_stats(request: Request):
+    """Returns today's hourly message distribution as JSON."""
     redirect = _require_auth(request)
     if redirect:
         return redirect
@@ -369,6 +394,7 @@ async def api_hourly_stats(request: Request):
 
 @router.get("/api/stats/top-senders")
 async def api_top_senders(request: Request):
+    """Returns today's top senders as JSON."""
     redirect = _require_auth(request)
     if redirect:
         return redirect
@@ -385,6 +411,7 @@ async def api_top_senders(request: Request):
 
 @router.get("/api/stats/daily-trend")
 async def api_daily_trend(request: Request):
+    """Returns historical daily message counts as JSON."""
     redirect = _require_auth(request)
     if redirect:
         return redirect
@@ -396,6 +423,7 @@ async def api_daily_trend(request: Request):
 
 @router.get("/groups")
 async def groups_page(request: Request):
+    """Renders the groups management page with activity and frequency info."""
     redirect = _require_auth(request)
     if redirect:
         return redirect
@@ -406,6 +434,7 @@ async def groups_page(request: Request):
 
 @router.post("/groups/sync")
 async def sync_groups(request: Request):
+    """Syncs groups from Telegram and reloads scheduler jobs."""
     redirect = _require_auth(request)
     if redirect:
         return redirect
@@ -427,6 +456,7 @@ async def sync_groups(request: Request):
 
 @router.post("/groups/{group_id}/toggle")
 async def toggle_group(request: Request, group_id: int):
+    """Toggles a group's active status and reloads scheduler jobs."""
     redirect = _require_auth(request)
     if redirect:
         return redirect
@@ -449,6 +479,7 @@ async def toggle_group(request: Request, group_id: int):
 
 @router.post("/groups/{group_id}/frequency")
 async def update_group_frequency(request: Request, group_id: int):
+    """Updates a group's summary frequency and reloads scheduler jobs."""
     redirect = _require_auth(request)
     if redirect:
         return redirect
@@ -494,6 +525,7 @@ async def update_group_frequency(request: Request, group_id: int):
 
 @router.get("/summaries/export")
 async def export_summaries(request: Request):
+    """Exports summaries as a single .md file or a .zip archive."""
     redirect = _require_auth(request)
     if redirect:
         return redirect
@@ -529,6 +561,7 @@ async def export_summaries(request: Request):
 
 @router.get("/summaries/{summary_id}/export")
 async def export_summary(request: Request, summary_id: int):
+    """Exports a single summary by ID as a Markdown file."""
     redirect = _require_auth(request)
     if redirect:
         return redirect
@@ -544,6 +577,7 @@ async def export_summary(request: Request, summary_id: int):
 
 @router.get("/summaries")
 async def summaries_page(request: Request):
+    """Renders the summaries page with context windows for a selected date."""
     redirect = _require_auth(request)
     if redirect:
         return redirect
@@ -570,6 +604,7 @@ async def summaries_page(request: Request):
 
 @router.get("/settings")
 async def settings_page(request: Request):
+    """Renders the settings form with current configuration values."""
     redirect = _require_auth(request)
     if redirect:
         return redirect
@@ -604,6 +639,7 @@ async def settings_page(request: Request):
 
 @router.post("/settings")
 async def save_settings(request: Request):
+    """Saves settings from the form, reloads bot keywords and scheduler jobs."""
     redirect = _require_auth(request)
     if redirect:
         return redirect
@@ -672,6 +708,7 @@ async def save_settings(request: Request):
 
 @router.post("/settings/test-push")
 async def test_push(request: Request):
+    """Sends a test message to the owner via Telegram."""
     redirect = _require_auth(request)
     if redirect:
         return redirect
@@ -693,6 +730,7 @@ async def test_push(request: Request):
 
 @router.post("/summary/trigger")
 async def trigger_summary(request: Request):
+    """Manually triggers summary generation and returns the result report."""
     redirect = _require_auth(request)
     if redirect:
         return redirect
@@ -725,6 +763,7 @@ async def trigger_summary(request: Request):
 
 @router.post("/summary/debug-curl")
 async def debug_curl(request: Request):
+    """Generates a curl command for debugging the LLM API call."""
     redirect = _require_auth(request)
     if redirect:
         return redirect
@@ -822,6 +861,7 @@ async def debug_curl(request: Request):
 
 @router.get("/api/context/{window_id}")
 async def get_context(request: Request, window_id: int):
+    """Returns stored context messages for a given window ID as JSON."""
     redirect = _require_auth(request)
     if redirect:
         return redirect
@@ -833,6 +873,7 @@ async def get_context(request: Request, window_id: int):
 
 @router.post("/api/context/fetch-telegram")
 async def fetch_telegram_context(request: Request):
+    """Fetches context messages directly from Telegram around a specific message."""
     redirect = _require_auth(request)
     if redirect:
         return redirect

@@ -33,28 +33,17 @@ _REF_PATTERN = re.compile(r"\[m:(\d+)\]")
 
 
 class Summarizer:
+    """Generates LLM-based summaries for Telegram group messages."""
+
     def __init__(self, config: Config, db: Database) -> None:
+        """Initializes the summarizer with configuration and database handle."""
         self._config = config
         self._db = db
         self._tz = ZoneInfo(config.tz)
         self._lock = asyncio.Lock()
-        self._client: AsyncOpenAI | None = None
-
-    def _get_client(self) -> AsyncOpenAI:
-        if self._client is None:
-            http_client = None
-            proxy_url = self._config.llm_proxy_url
-            if proxy_url:
-                http_client = httpx.AsyncClient(proxy=proxy_url)
-            self._client = AsyncOpenAI(
-                base_url=self._config.llm_base_url,
-                api_key=self._config.llm_api_key,
-                http_client=http_client,
-                timeout=60.0,
-            )
-        return self._client
 
     async def _reload_llm_config(self) -> tuple[str, str, str, str]:
+        """Loads LLM connection settings from the database, falling back to config defaults."""
         base_url = await self._db.get_setting("llm_base_url", self._config.llm_base_url)
         api_key = await self._db.get_setting("llm_api_key", self._config.llm_api_key)
         model = await self._db.get_setting("llm_model", self._config.llm_model)
@@ -62,6 +51,7 @@ class Summarizer:
         return base_url, api_key, model, api_format
 
     async def _call_chat(self, client: AsyncOpenAI, model: str, system_prompt: str, user_prompt: str) -> str:
+        """Calls the LLM via the chat completions API."""
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
@@ -75,6 +65,7 @@ class Summarizer:
         return response.choices[0].message.content or ""
 
     async def _call_responses(self, client: AsyncOpenAI, model: str, system_prompt: str, user_prompt: str) -> str:
+        """Calls the LLM via the responses API (OpenAI new format)."""
         input_messages = []
         if system_prompt:
             input_messages.append({"role": "developer", "content": system_prompt})
@@ -86,6 +77,7 @@ class Summarizer:
         return response.output_text or ""
 
     async def _call_llm(self, system_prompt: str, user_prompt: str) -> str:
+        """Sends a prompt to the LLM and returns the generated text."""
         base_url, api_key, model, api_format = await self._reload_llm_config()
 
         proxy_url = self._config.llm_proxy_url
@@ -106,12 +98,13 @@ class Summarizer:
             await client.close()
 
     def _truncate_messages(self, messages: list[dict], max_chars: int = 3000) -> str:
+        """Formats messages into text, keeping the most recent ones within the character limit."""
+        sorted_msgs = sorted(messages, key=lambda m: m["message_id"])
         lines = []
-        for msg in reversed(messages):
+        for msg in sorted_msgs:
             sender = msg["sender_name"] or "Unknown"
             ts = datetime.fromtimestamp(msg["timestamp"], self._tz).strftime("%H:%M")
-            line = f"[m:{msg['message_id']}][{ts}][{sender}]: {msg['text']}"
-            lines.insert(0, line)
+            lines.append(f"[m:{msg['message_id']}][{ts}][{sender}]: {msg['text']}")
 
         text = "\n".join(lines)
         if len(text) <= max_chars:
@@ -127,10 +120,12 @@ class Summarizer:
 
     @staticmethod
     def parse_referenced_ids(text: str) -> list[int]:
+        """Extracts message IDs from [m:ID] references in summary text."""
         return [int(m) for m in _REF_PATTERN.findall(text)]
 
     @staticmethod
     def _group_nearby_refs(ref_ids: list[int], messages: list[dict], radius: int) -> list[list[int]]:
+        """Groups referenced message IDs that are within 2*radius positions of each other."""
         if not ref_ids:
             return []
         msg_positions = {m["message_id"]: i for i, m in enumerate(messages)}
@@ -149,6 +144,7 @@ class Summarizer:
     async def _create_context_windows(
         self, summary_id: int, group_id: int, ref_ids: list[int], messages: list[dict], context_radius: int
     ) -> set[int]:
+        """Creates context windows around referenced messages and returns the set of kept message IDs."""
         valid_msg_ids = {m["message_id"] for m in messages}
         valid_refs = [r for r in ref_ids if r in valid_msg_ids]
         ref_groups = self._group_nearby_refs(valid_refs, messages, context_radius)
@@ -175,6 +171,7 @@ class Summarizer:
         return keep_ids
 
     async def _summarize_messages(self, messages: list[dict]) -> tuple[str, list[int]] | None:
+        """Sends messages to the LLM and returns the summary text with referenced message IDs."""
         if not messages:
             return None
 
@@ -198,11 +195,19 @@ class Summarizer:
             logger.error(f"LLM failed for group {group_name} ({group_id}): {e}")
             return None
 
-    async def summarize_group(self, biz_date: str, group_id: int, group_name: str) -> tuple[str, list[int]] | None:
+    async def summarize_group(
+        self, biz_date: str, group_id: int, group_name: str
+    ) -> tuple[str, list[int], list[dict]] | None:
+        """Summarizes all messages for a group on a given date."""
         messages = await self._db.get_messages_by_date(biz_date, group_id)
-        return await self._summarize_messages(messages)
+        result = await self._summarize_messages(messages)
+        if result is None:
+            return None
+        summary, ref_ids = result
+        return (summary, ref_ids, messages)
 
     async def run_incremental_summary(self, group_id: int) -> dict | None:
+        """Runs an incremental summary for a group using only messages since the last summary."""
         async with self._lock:
             now = datetime.now(self._tz)
             snapshot_ts = int(now.timestamp())
@@ -261,10 +266,12 @@ class Summarizer:
         biz_period: str = "daily",
         skip_existing: bool = False,
     ) -> dict:
+        """Runs summaries for all active groups and returns aggregated results."""
         async with self._lock:
             return await self._execute_summary(group_ids, biz_date, biz_period, skip_existing)
 
     async def _get_context_radius(self) -> int:
+        """Returns the context radius setting, clamped between 5 and 100."""
         try:
             return max(5, min(100, int(await self._db.get_setting("context_radius", "30"))))
         except (ValueError, TypeError):
@@ -277,6 +284,7 @@ class Summarizer:
         biz_period: str = "daily",
         skip_existing: bool = False,
     ) -> dict:
+        """Iterates over active groups, summarizes each, and builds context windows."""
         if biz_date is None:
             biz_date = datetime.now(self._tz).strftime("%Y-%m-%d")
 
@@ -310,8 +318,7 @@ class Summarizer:
                     results["failed"].append(group_name)
                 continue
 
-            summary, ref_ids = result
-            messages = await self._db.get_messages_by_date(biz_date, group_id)
+            summary, ref_ids, messages = result
             msg_count = len(messages)
 
             summary_id = await self._db.insert_summary(
@@ -348,6 +355,7 @@ class Summarizer:
         return results
 
     def format_incremental_report(self, result: dict) -> str:
+        """Formats a single-group incremental summary result into a human-readable report."""
         period_label = "每日摘要" if result["biz_period"] == "daily" else f"{result['biz_period']} 摘要"
         return "\n".join([
             f"📋 群聊摘要 ({result['date']} {period_label})",
@@ -357,6 +365,7 @@ class Summarizer:
         ])
 
     async def _cleanup_expired(self) -> None:
+        """Deletes expired summaries and evicts LRU context messages beyond the configured limit."""
         retention_str = await self._db.get_setting(
             "summary_retention_days", str(self._config.summary_retention_days)
         )
@@ -373,6 +382,7 @@ class Summarizer:
             logger.info(f"Cleaned {cleaned} LRU context messages")
 
     def format_report(self, results: dict) -> str:
+        """Formats a multi-group summary result into a human-readable report."""
         biz_period = results.get("biz_period", "daily")
         if biz_period.startswith("manual_"):
             lines = [f"📋 手动群聊摘要 ({results['date']} {biz_period[7:]})", ""]

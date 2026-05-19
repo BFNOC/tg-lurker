@@ -15,7 +15,10 @@ templates = Jinja2Templates(directory=str(_HERE / "templates"))
 
 
 class CSRFContextMiddleware(BaseHTTPMiddleware):
+    """Injects a CSRF token into every request and sets the CSRF cookie when absent."""
+
     async def dispatch(self, request: Request, call_next):
+        """Reads or generates a CSRF token, attaches it to request.state, and ensures the cookie is set."""
         from web.auth import get_csrf_token, set_csrf_cookie, CSRF_COOKIE
         token = get_csrf_token(request)
         request.state.csrf_token = token
@@ -26,6 +29,7 @@ class CSRFContextMiddleware(BaseHTTPMiddleware):
 
 
 def create_app(config: Config, db: Database, bot=None, scheduler=None) -> FastAPI:
+    """Builds and returns the FastAPI application with all middleware, routers, and template globals."""
     app = FastAPI(title="tg-lurker", docs_url=None, redoc_url=None)
     app.state.config = config
     app.state.db = db
@@ -52,6 +56,7 @@ def create_app(config: Config, db: Database, bot=None, scheduler=None) -> FastAP
     tz = ZoneInfo(config.tz)
 
     def timestamp_to_time(ts):
+        """Converts a Unix timestamp to HH:MM string in the configured timezone."""
         return datetime.fromtimestamp(ts, tz).strftime("%H:%M")
 
     templates.env.filters["timestamp_to_time"] = timestamp_to_time

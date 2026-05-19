@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 
 
 class SummaryScheduler:
+    """Manages scheduled summary generation with retry and per-group cron support."""
+
     MAX_RETRIES = 3
     RETRY_DELAY_MINUTES = 5
 
@@ -26,6 +28,7 @@ class SummaryScheduler:
         db: Database | None = None,
         send_callback=None,
     ) -> None:
+        """Initializes the scheduler with config, summarizer, database, and optional send callback."""
         self._config = config
         self._summarizer = summarizer
         self._db = db or summarizer._db
@@ -35,6 +38,7 @@ class SummaryScheduler:
         self._reload_lock = asyncio.Lock()
 
     def start(self) -> None:
+        """Starts the APScheduler and schedules an immediate job reload."""
         if not self._scheduler.running:
             self._scheduler.start()
         self._scheduler.add_job(
@@ -48,9 +52,11 @@ class SummaryScheduler:
 
     @staticmethod
     def validate_cron(expr: str, timezone: ZoneInfo) -> CronTrigger:
+        """Parses a cron expression into a CronTrigger for the given timezone."""
         return CronTrigger.from_crontab(expr, timezone=timezone)
 
     def _job_options(self) -> dict:
+        """Returns default APScheduler job options for summary jobs."""
         return {
             "replace_existing": True,
             "max_instances": 1,
@@ -59,6 +65,7 @@ class SummaryScheduler:
         }
 
     async def reload_jobs(self) -> None:
+        """Reloads all summary jobs from the database, replacing existing ones."""
         async with self._reload_lock:
             for job in self._scheduler.get_jobs():
                 if job.id == "summary:global" or job.id.startswith("summary:group:"):
@@ -67,6 +74,7 @@ class SummaryScheduler:
             await self._reload_jobs_inner()
 
     async def _reload_jobs_inner(self) -> None:
+        """Reads global and per-group cron settings from the database and registers corresponding scheduler jobs."""
         global_cron = await self._db.get_setting("summary_cron", self._config.summary_cron)
         try:
             global_trigger = self.validate_cron(global_cron, self._tz)
@@ -102,9 +110,11 @@ class SummaryScheduler:
         logger.info(f"Summary jobs loaded: global={global_cron}, custom_groups={len(custom_groups)}")
 
     async def _run_global_summary(self) -> None:
+        """Triggers the global summary generation."""
         await self._attempt_global_summary(0)
 
     async def _attempt_global_summary(self, retry_count: int) -> None:
+        """Runs the global summary for all default-cron groups, retrying on failure."""
         try:
             groups = await self._db.get_default_cron_groups()
             if not groups:
@@ -127,9 +137,11 @@ class SummaryScheduler:
             await self._schedule_retry("global", retry_count, e)
 
     async def _run_group_summary(self, group_id: int) -> None:
+        """Triggers summary generation for a single group."""
         await self._attempt_group_summary(group_id, 0)
 
     async def _attempt_group_summary(self, group_id: int, retry_count: int) -> None:
+        """Runs an incremental summary for the specified group, retrying on failure."""
         try:
             result = await self._summarizer.run_incremental_summary(group_id)
             if not result:
@@ -143,6 +155,7 @@ class SummaryScheduler:
             await self._schedule_retry(f"group:{group_id}", retry_count, e)
 
     async def _send_report(self, report: str, has_groups: bool) -> None:
+        """Sends the summary report via the configured callback if Telegram push is enabled."""
         if not self._send_callback or not has_groups:
             return
         tg_push = await self._db.get_setting(
@@ -153,6 +166,7 @@ class SummaryScheduler:
             await self._send_callback(report)
 
     async def _clear_messages(self, results: dict) -> None:
+        """Deletes summarized messages except those referenced in context windows."""
         biz_date = results["date"]
         snapshot_ts = results.get("snapshot_ts")
         for g in results["groups"]:
@@ -165,16 +179,19 @@ class SummaryScheduler:
             )
 
     async def _clear_custom_group_messages(self, biz_date: str, snapshot_ts: int | None) -> None:
-        for group in await self._db.get_custom_cron_groups():
-            keep_ids = await self._db.get_context_message_ids_for_group_date(biz_date, group["group_id"])
-            if not keep_ids:
-                logger.warning(f"Skipping custom message cleanup for {group['group_name']}: no valid context references")
-                continue
-            await self._db.delete_messages_except_context(
-                biz_date, snapshot_ts, keep_ids, group["group_id"]
-            )
+        """Deletes summarized messages for custom-cron groups, preserving context-referenced messages."""
+        async with self._summarizer._lock:
+            for group in await self._db.get_custom_cron_groups():
+                keep_ids = await self._db.get_context_message_ids_for_group_date(biz_date, group["group_id"])
+                if not keep_ids:
+                    logger.warning(f"Skipping custom message cleanup for {group['group_name']}: no valid context references")
+                    continue
+                await self._db.delete_messages_except_context(
+                    biz_date, snapshot_ts, keep_ids, group["group_id"]
+                )
 
     async def _schedule_retry(self, scope: str, retry_count: int, error: Exception) -> None:
+        """Schedules a retry for a failed summary job if retries remain."""
         next_retry = retry_count + 1
         logger.error(f"Summary failed scope={scope} attempt={next_retry}: {error}")
 
@@ -205,7 +222,9 @@ class SummaryScheduler:
         biz_date: str | None = None,
         biz_period: str | None = None,
     ) -> dict:
+        """Triggers an immediate summary for the specified groups or all groups."""
         return await self._summarizer.run_daily_summary(group_ids, biz_date, biz_period=biz_period or "daily")
 
     def stop(self) -> None:
+        """Shuts down the scheduler immediately without waiting for running jobs."""
         self._scheduler.shutdown(wait=False)

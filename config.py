@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 
 @dataclass(frozen=True)
 class Config:
+    """Holds all application configuration loaded from environment variables."""
     api_id: int
     api_hash: str
     owner_id: int
@@ -32,6 +33,7 @@ class Config:
 
 
 def _require(name: str) -> str:
+    """Reads a required environment variable, exiting if unset or empty."""
     val = os.getenv(name, "").strip()
     if not val:
         print(f"ERROR: {name} is required but not set", file=sys.stderr)
@@ -40,6 +42,7 @@ def _require(name: str) -> str:
 
 
 def load_config(env_path: str | None = None) -> Config:
+    """Loads environment variables from a .env file and returns a Config instance."""
     load_dotenv(env_path or ".env")
 
     proxy_port_raw = os.getenv("PROXY_PORT", "0").strip()
