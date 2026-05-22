@@ -81,6 +81,8 @@
         flex-wrap: wrap;
         justify-content: flex-end;
     }
+    .fav-note-toggle { cursor: pointer; color: var(--text-muted); font-size: 12px; }
+    .fav-note-toggle:hover { color: var(--favorite-gold); }
     .summary-period-divider {
         display: flex;
         align-items: center;
@@ -104,6 +106,11 @@
         <h1>历史摘要</h1>
         <p>查看并管理过去生成的群组消息摘要</p>
     </div>
+</div>
+
+<div class="sub-tabs" style="display:flex;gap:8px;margin-bottom:24px;">
+    <a href="/summaries" class="btn btn-sm" style="background:var(--accent);color:#fff;">摘要</a>
+    <a href="/favorites" class="btn btn-ghost btn-sm">收藏</a>
 </div>
 
 <div class="card animate-fade-in">
@@ -131,20 +138,77 @@
         {% set ns.period = s.biz_period %}
         <div class="summary-period-divider">{{ s.biz_period_label }}</div>
         {% endif %}
-        <div class="summary-item animate-fade-in" style="animation-delay: {{ loop.index0 * 0.1 }}s;">
+        <div class="summary-item animate-fade-in {% if s.is_favorite %}favorited{% endif %}" style="animation-delay: {{ loop.index0 * 0.1 }}s;" data-summary-item-id="{{ s.id }}">
             <div class="summary-header">
                 <div class="summary-group-name">
                     <svg style="width:18px;height:18px;vertical-align:middle;margin-right:4px;color:var(--accent);" aria-hidden="true" role="img"><use href="#icon-groups"></use></svg>
                     {{ s.group_name }}
+                    {% if s.is_favorite %}<span class="fav-badge"><svg style="width:10px;height:10px;" aria-hidden="true"><use href="#icon-star-filled"></use></svg> 已收藏</span>{% endif %}
                 </div>
                 <div class="summary-actions">
                     <span class="summary-msg-count">{{ s.biz_period_label }}</span>
                     <span class="summary-msg-count">{{ s.message_count }} 条消息</span>
+                    {% if s.is_favorite %}
+                    <button class="btn btn-ghost btn-sm fav-btn active"
+                            hx-post="/summaries/{{ s.id }}/favorite"
+                            hx-swap="outerHTML"
+                            hx-target="closest .summary-item"
+                            aria-label="取消收藏">
+                        <svg style="width:14px;height:14px;color:var(--favorite-gold);" aria-hidden="true"><use href="#icon-star-filled"></use></svg>
+                        <span>已收藏</span>
+                    </button>
+                    {% else %}
+                    <button class="btn btn-ghost btn-sm fav-btn"
+                            hx-post="/summaries/{{ s.id }}/favorite"
+                            hx-swap="outerHTML"
+                            hx-target="closest .summary-item"
+                            aria-label="添加收藏">
+                        <svg style="width:14px;height:14px;" aria-hidden="true"><use href="#icon-star"></use></svg>
+                        <span>收藏</span>
+                    </button>
+                    {% endif %}
                     <a class="btn btn-ghost btn-sm" href="/summaries/{{ s.id }}/export">导出</a>
+                    <button class="btn btn-ghost btn-sm delete-btn"
+                            hx-post="/summaries/{{ s.id }}/delete"
+                            hx-confirm="确定删除这条摘要吗？{% if s.is_favorite %}此摘要已收藏，删除后收藏记录也会被删除。{% endif %}"
+                            hx-target="closest .summary-item"
+                            hx-swap="outerHTML swap:300ms">删除</button>
                 </div>
             </div>
             <div class="summary-text" data-summary-id="{{ s.id }}" data-group-id="{{ s.group_id }}"
                  data-windows='{{ s.context_windows | tojson }}'>{{ s.summary_text }}</div>
+            {% if s.is_favorite %}
+            <div class="fav-note" id="fav-note-{{ s.id }}">
+                {% if s.favorite_custom_text %}
+                <div class="fav-note-display">
+                    <div class="fav-note-content">{{ s.favorite_custom_text }}</div>
+                    <div style="margin-top:8px;">
+                        <button class="btn btn-ghost btn-sm fav-note-toggle" onclick="toggleNoteEdit({{ s.id }})">编辑备注</button>
+                    </div>
+                </div>
+                <div class="fav-note-edit" style="display:none;">
+                    <textarea maxlength="4000" placeholder="添加收藏备注...">{{ s.favorite_custom_text }}</textarea>
+                    <div class="fav-note-actions">
+                        <button class="btn btn-ghost btn-sm" onclick="toggleNoteEdit({{ s.id }})">取消</button>
+                        <button class="btn btn-sm" onclick="saveNote({{ s.id }})">保存</button>
+                        <span class="fav-note-char-count"></span>
+                    </div>
+                </div>
+                {% else %}
+                <div class="fav-note-display">
+                    <button class="btn btn-ghost btn-sm fav-note-toggle" onclick="toggleNoteEdit({{ s.id }})">+ 添加备注</button>
+                </div>
+                <div class="fav-note-edit" style="display:none;">
+                    <textarea maxlength="4000" placeholder="添加收藏备注..."></textarea>
+                    <div class="fav-note-actions">
+                        <button class="btn btn-ghost btn-sm" onclick="toggleNoteEdit({{ s.id }})">取消</button>
+                        <button class="btn btn-sm" onclick="saveNote({{ s.id }})">保存</button>
+                        <span class="fav-note-char-count"></span>
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+            {% endif %}
         </div>
         {% endfor %}
     {% else %}
@@ -157,7 +221,7 @@
 </div>
 
 <div class="modal-overlay" id="ctx-modal">
-    <div class="modal-box">
+    <div class="modal-box" role="dialog" aria-modal="true">
         <div class="modal-header">
             <h3>消息上下文</h3>
             <button class="modal-close" onclick="closeCtxModal()">&times;</button>
@@ -192,10 +256,10 @@ document.querySelectorAll('.summary-text').forEach(el => {
 
     text = text.replace(/\[m:(\d+)\]/g, '<span class="ctx-placeholder" data-msg-id="$1"></span>');
 
-    if (typeof marked !== 'undefined') {
-        el.innerHTML = marked.parse(text);
+    if (typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {
+        el.innerHTML = DOMPurify.sanitize(marked.parse(text));
     } else {
-        el.innerHTML = text;
+        el.textContent = text;
     }
 
     el.querySelectorAll('a').forEach(a => {
@@ -270,6 +334,7 @@ function closeCtxModal() {
 document.getElementById('ctx-modal').addEventListener('click', function(e) {
     if (e.target === this) closeCtxModal();
 });
+document.addEventListener('keydown', function(e) { if (e.key === 'Escape') closeCtxModal(); });
 
 document.getElementById('ctx-fetch-more').addEventListener('click', function() {
     this.disabled = true;
@@ -293,5 +358,82 @@ document.getElementById('ctx-fetch-more').addEventListener('click', function() {
         })
         .finally(() => { this.disabled = false; });
 });
+
+function toggleNoteEdit(summaryId) {
+    const noteDiv = document.getElementById('fav-note-' + summaryId);
+    if (!noteDiv) return;
+    const display = noteDiv.querySelector('.fav-note-display');
+    const edit = noteDiv.querySelector('.fav-note-edit');
+    if (!display || !edit) return;
+    const isHidden = edit.style.display === 'none';
+    display.style.display = isHidden ? 'none' : '';
+    edit.style.display = isHidden ? '' : 'none';
+    if (isHidden) {
+        const textarea = edit.querySelector('textarea');
+        if (textarea) {
+            textarea.focus();
+            updateCharCount(textarea);
+            textarea.addEventListener('input', function() { updateCharCount(this); });
+        }
+    }
+}
+
+function updateCharCount(textarea) {
+    const counter = textarea.closest('.fav-note-edit').querySelector('.fav-note-char-count');
+    if (counter) counter.textContent = textarea.value.length + ' / 4000';
+}
+
+function saveNote(summaryId) {
+    const noteDiv = document.getElementById('fav-note-' + summaryId);
+    if (!noteDiv) return;
+    const textarea = noteDiv.querySelector('.fav-note-edit textarea');
+    if (!textarea) return;
+    const customText = textarea.value.trim();
+    const csrf = getCsrfToken();
+    const formData = new FormData();
+    formData.append('custom_text', customText);
+    formData.append('csrf_token', csrf);
+
+    fetch('/summaries/' + summaryId + '/favorite', {
+        method: 'PATCH',
+        body: formData,
+    })
+    .then(r => {
+        if (!r.ok) throw new Error('Save failed');
+        return r.text();
+    })
+    .then(() => {
+        showToast(customText ? '备注已保存' : '备注已清空');
+        toggleNoteEdit(summaryId);
+        const contentDiv = noteDiv.querySelector('.fav-note-content');
+        if (customText) {
+            if (contentDiv) {
+                contentDiv.textContent = customText;
+            } else {
+                const displayDiv = noteDiv.querySelector('.fav-note-display');
+                displayDiv.innerHTML = '';
+                const noteBlock = document.createElement('div');
+                noteBlock.className = 'fav-note-content';
+                noteBlock.textContent = customText;
+                noteBlock.style.whiteSpace = 'pre-wrap';
+                displayDiv.appendChild(noteBlock);
+                const editBtn = document.createElement('div');
+                editBtn.style.marginTop = '8px';
+                editBtn.innerHTML = '<button class="btn btn-ghost btn-sm fav-note-toggle">编辑备注</button>';
+                editBtn.querySelector('button').onclick = function() { toggleNoteEdit(summaryId); };
+                displayDiv.appendChild(editBtn);
+            }
+        } else {
+            const displayDiv = noteDiv.querySelector('.fav-note-display');
+            displayDiv.innerHTML = '';
+            const addBtn = document.createElement('button');
+            addBtn.className = 'btn btn-ghost btn-sm fav-note-toggle';
+            addBtn.textContent = '+ 添加备注';
+            addBtn.onclick = function() { toggleNoteEdit(summaryId); };
+            displayDiv.appendChild(addBtn);
+        }
+    })
+    .catch(e => showToast('保存失败: ' + e.message, 'error'));
+}
 </script>
 {% endblock %}

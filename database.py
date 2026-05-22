@@ -99,6 +99,20 @@ CREATE INDEX IF NOT EXISTS idx_summaries_group_date ON summaries(group_id, biz_d
 CREATE INDEX IF NOT EXISTS idx_context_windows_summary ON context_windows(summary_id);
 CREATE INDEX IF NOT EXISTS idx_context_messages_window ON context_messages(window_id);
 CREATE INDEX IF NOT EXISTS idx_alerts_created ON alerts(created_at);
+
+CREATE TABLE IF NOT EXISTS summary_favorites (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    biz_date TEXT NOT NULL,
+    biz_period TEXT NOT NULL DEFAULT 'daily',
+    group_id INTEGER NOT NULL,
+    custom_text TEXT,
+    created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+    updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+    UNIQUE(biz_date, group_id, biz_period)
+);
+
+CREATE INDEX IF NOT EXISTS idx_summary_favorites_identity ON summary_favorites(biz_date, group_id, biz_period);
+CREATE INDEX IF NOT EXISTS idx_summary_favorites_created ON summary_favorites(created_at);
 """
 
 
@@ -157,7 +171,29 @@ class Database:
             "covered_refs",
             "ALTER TABLE context_windows ADD COLUMN covered_refs TEXT",
         )
+        await self._migrate_favorites()
         await self.conn.commit()
+
+    async def _migrate_favorites(self) -> None:
+        """Creates summary_favorites table and indexes if they don't exist."""
+        await self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS summary_favorites (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                biz_date TEXT NOT NULL,
+                biz_period TEXT NOT NULL DEFAULT 'daily',
+                group_id INTEGER NOT NULL,
+                custom_text TEXT,
+                created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+                updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+                UNIQUE(biz_date, group_id, biz_period)
+            )"""
+        )
+        await self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_summary_favorites_identity ON summary_favorites(biz_date, group_id, biz_period)"
+        )
+        await self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_summary_favorites_created ON summary_favorites(created_at)"
+        )
 
     async def _ensure_column(self, table: str, column: str, ddl: str) -> None:
         """Adds column to table if it doesn't already exist."""
@@ -500,18 +536,24 @@ class Database:
         self, biz_date: str, group_id: int | None = None
     ) -> list[dict]:
         """Fetches summaries for a business date, optionally filtered by group."""
+        base = """SELECT s.id, s.biz_date, s.biz_period, s.group_id, s.group_name,
+                         s.message_count, s.summary_text, s.created_at,
+                         CASE WHEN f.id IS NOT NULL THEN 1 ELSE 0 END AS is_favorite,
+                         f.custom_text AS favorite_custom_text,
+                         f.created_at AS favorited_at
+                  FROM summaries s
+                  LEFT JOIN summary_favorites f
+                      ON f.biz_date = s.biz_date
+                      AND f.group_id = s.group_id
+                      AND f.biz_period = s.biz_period"""
         if group_id is not None:
             cursor = await self.conn.execute(
-                """SELECT id, biz_date, biz_period, group_id, group_name, message_count, summary_text, created_at
-                   FROM summaries WHERE biz_date = ? AND group_id = ?
-                   ORDER BY created_at DESC""",
+                base + " WHERE s.biz_date = ? AND s.group_id = ? ORDER BY s.created_at DESC",
                 (biz_date, group_id),
             )
         else:
             cursor = await self.conn.execute(
-                """SELECT id, biz_date, biz_period, group_id, group_name, message_count, summary_text, created_at
-                   FROM summaries WHERE biz_date = ?
-                   ORDER BY created_at DESC""",
+                base + " WHERE s.biz_date = ? ORDER BY s.created_at DESC",
                 (biz_date,),
             )
         rows = await cursor.fetchall()
@@ -525,6 +567,9 @@ class Database:
                 "message_count": r[5],
                 "summary_text": r[6],
                 "created_at": r[7],
+                "is_favorite": bool(r[8]),
+                "favorite_custom_text": r[9],
+                "favorited_at": r[10],
             }
             for r in rows
         ]
@@ -555,8 +600,17 @@ class Database:
     async def get_summary_with_context(self, summary_id: int) -> dict | None:
         """读取单条摘要及其全部上下文窗口和上下文消息，用于导出。"""
         cursor = await self.conn.execute(
-            """SELECT id, biz_date, biz_period, group_id, group_name, message_count, summary_text, created_at
-               FROM summaries WHERE id = ?""",
+            """SELECT s.id, s.biz_date, s.biz_period, s.group_id, s.group_name,
+                      s.message_count, s.summary_text, s.created_at,
+                      CASE WHEN f.id IS NOT NULL THEN 1 ELSE 0 END AS is_favorite,
+                      f.custom_text AS favorite_custom_text,
+                      f.created_at AS favorited_at
+               FROM summaries s
+               LEFT JOIN summary_favorites f
+                   ON f.biz_date = s.biz_date
+                   AND f.group_id = s.group_id
+                   AND f.biz_period = s.biz_period
+               WHERE s.id = ?""",
             (summary_id,),
         )
         row = await cursor.fetchone()
@@ -572,6 +626,9 @@ class Database:
             "message_count": row[5],
             "summary_text": row[6],
             "created_at": row[7],
+            "is_favorite": bool(row[8]),
+            "favorite_custom_text": row[9],
+            "favorited_at": row[10],
             "windows": [],
         }
 
@@ -605,12 +662,156 @@ class Database:
         return result
 
     async def delete_expired_summaries(self, cutoff_date: str) -> int:
-        """Deletes summaries older than cutoff_date. Returns count deleted."""
+        """Deletes summaries older than cutoff_date, skipping favorited ones. Returns count deleted."""
         cursor = await self.conn.execute(
-            "DELETE FROM summaries WHERE biz_date < ?", (cutoff_date,)
+            """DELETE FROM summaries WHERE biz_date < ?
+               AND NOT EXISTS (
+                   SELECT 1 FROM summary_favorites f
+                   WHERE f.biz_date = summaries.biz_date
+                   AND f.group_id = summaries.group_id
+                   AND f.biz_period = summaries.biz_period
+               )""",
+            (cutoff_date,),
         )
         await self.conn.commit()
         return cursor.rowcount
+
+    async def delete_summary(self, summary_id: int) -> bool:
+        """Deletes a summary and its associated favorite record atomically. Returns True if deleted."""
+        await self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            cursor = await self.conn.execute(
+                "SELECT biz_date, group_id, biz_period FROM summaries WHERE id = ?",
+                (summary_id,),
+            )
+            row = await cursor.fetchone()
+            if not row:
+                await self.conn.rollback()
+                return False
+            biz_date, group_id, biz_period = row[0], row[1], row[2]
+            await self.conn.execute(
+                """DELETE FROM summary_favorites
+                   WHERE biz_date = ? AND group_id = ? AND biz_period = ?""",
+                (biz_date, group_id, biz_period),
+            )
+            await self.conn.execute("DELETE FROM summaries WHERE id = ?", (summary_id,))
+            await self.conn.commit()
+            return True
+        except Exception:
+            await self.conn.rollback()
+            raise
+
+    # --- summary_favorites ---
+
+    async def get_summary_identity(self, summary_id: int) -> tuple[str, int, str] | None:
+        """Returns (biz_date, group_id, biz_period) for a summary, or None if not found."""
+        cursor = await self.conn.execute(
+            "SELECT biz_date, group_id, biz_period FROM summaries WHERE id = ?",
+            (summary_id,),
+        )
+        row = await cursor.fetchone()
+        return (row[0], row[1], row[2]) if row else None
+
+    async def upsert_summary_favorite(
+        self, biz_date: str, group_id: int, biz_period: str, custom_text: str | None = None
+    ) -> int:
+        """Inserts or updates a favorite. Returns the favorite id."""
+        import time
+        now = int(time.time())
+        await self.conn.execute(
+            """INSERT INTO summary_favorites (biz_date, group_id, biz_period, custom_text, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(biz_date, group_id, biz_period)
+               DO UPDATE SET custom_text = excluded.custom_text, updated_at = excluded.updated_at""",
+            (biz_date, group_id, biz_period, custom_text, now, now),
+        )
+        await self.conn.commit()
+        cursor = await self.conn.execute(
+            """SELECT id FROM summary_favorites
+               WHERE biz_date = ? AND group_id = ? AND biz_period = ?""",
+            (biz_date, group_id, biz_period),
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+
+    async def delete_summary_favorite(
+        self, biz_date: str, group_id: int, biz_period: str
+    ) -> bool:
+        """Removes a favorite record. Returns True if a row was deleted."""
+        cursor = await self.conn.execute(
+            """DELETE FROM summary_favorites
+               WHERE biz_date = ? AND group_id = ? AND biz_period = ?""",
+            (biz_date, group_id, biz_period),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def get_favorite_by_natural_key(
+        self, biz_date: str, group_id: int, biz_period: str
+    ) -> dict | None:
+        """Returns favorite record by natural key, or None."""
+        cursor = await self.conn.execute(
+            """SELECT id, biz_date, biz_period, group_id, custom_text, created_at, updated_at
+               FROM summary_favorites
+               WHERE biz_date = ? AND group_id = ? AND biz_period = ?""",
+            (biz_date, group_id, biz_period),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0],
+            "biz_date": row[1],
+            "biz_period": row[2],
+            "group_id": row[3],
+            "custom_text": row[4],
+            "created_at": row[5],
+            "updated_at": row[6],
+        }
+
+    async def get_all_favorites(self) -> list[dict]:
+        """Returns all favorites with summary data, ordered by favorite created_at DESC."""
+        cursor = await self.conn.execute(
+            """SELECT f.id, f.biz_date, f.biz_period, f.group_id, f.custom_text,
+                      f.created_at AS favorited_at,
+                      s.id AS summary_id, s.group_name, s.message_count,
+                      s.summary_text, s.created_at AS summary_created_at
+               FROM summary_favorites f
+               LEFT JOIN summaries s
+                   ON s.biz_date = f.biz_date
+                   AND s.group_id = f.group_id
+                   AND s.biz_period = f.biz_period
+               ORDER BY f.created_at DESC"""
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "favorite_id": r[0],
+                "biz_date": r[1],
+                "biz_period": r[2],
+                "group_id": r[3],
+                "custom_text": r[4],
+                "favorited_at": r[5],
+                "summary_id": r[6],
+                "group_name": r[7],
+                "message_count": r[8],
+                "summary_text": r[9],
+                "summary_created_at": r[10],
+            }
+            for r in rows
+        ]
+
+    async def is_summary_favorite(
+        self, biz_date: str, group_id: int, biz_period: str
+    ) -> bool:
+        """Checks whether a summary is favorited."""
+        cursor = await self.conn.execute(
+            """SELECT 1 FROM summary_favorites
+               WHERE biz_date = ? AND group_id = ? AND biz_period = ?
+               LIMIT 1""",
+            (biz_date, group_id, biz_period),
+        )
+        return await cursor.fetchone() is not None
 
     # --- monitored_groups ---
 
@@ -628,6 +829,14 @@ class Database:
         """Returns all active monitored groups."""
         cursor = await self.conn.execute(
             "SELECT group_id, group_name FROM monitored_groups WHERE is_active = 1"
+        )
+        rows = await cursor.fetchall()
+        return [{"group_id": r[0], "group_name": r[1]} for r in rows]
+
+    async def get_all_groups(self) -> list[dict]:
+        """Returns all monitored groups (active and inactive)."""
+        cursor = await self.conn.execute(
+            "SELECT group_id, group_name FROM monitored_groups"
         )
         rows = await cursor.fetchall()
         return [{"group_id": r[0], "group_name": r[1]} for r in rows]
@@ -979,7 +1188,7 @@ class Database:
         return row[0] if row else 0
 
     async def cleanup_lru_contexts(self, max_rows: int) -> int:
-        """Evicts oldest-accessed context windows until total rows are within max_rows. Returns count deleted."""
+        """Evicts oldest-accessed context windows, skipping favorited summaries. Returns count deleted."""
         total = await self.get_context_storage_count()
         if total <= max_rows:
             return 0
@@ -989,6 +1198,12 @@ class Database:
             cursor = await self.conn.execute(
                 """SELECT id FROM summaries
                    WHERE id IN (SELECT DISTINCT summary_id FROM context_windows)
+                   AND NOT EXISTS (
+                       SELECT 1 FROM summary_favorites f
+                       WHERE f.biz_date = summaries.biz_date
+                       AND f.group_id = summaries.group_id
+                       AND f.biz_period = summaries.biz_period
+                   )
                    ORDER BY last_accessed_at ASC LIMIT 1"""
             )
             row = await cursor.fetchone()

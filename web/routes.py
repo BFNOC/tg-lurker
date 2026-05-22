@@ -144,7 +144,7 @@ async def _groups_template_context(request: Request) -> dict:
 
 
 def _render_summary_markdown(summary: dict, tz: ZoneInfo) -> str:
-    """Renders a summary with its context windows into a Markdown string."""
+    """Renders a summary with its context windows and optional favorite note into a Markdown string."""
     created_at = datetime.fromtimestamp(summary["created_at"], tz).strftime("%Y-%m-%d %H:%M:%S")
     period_label = _format_biz_period(summary.get("biz_period", "daily"))
     lines = [
@@ -152,13 +152,22 @@ def _render_summary_markdown(summary: dict, tz: ZoneInfo) -> str:
         "",
         f"> 消息数: {summary['message_count']} | 时段: {period_label} | 生成时间: {created_at}",
         "",
+    ]
+    if summary.get("is_favorite") and summary.get("favorite_custom_text"):
+        lines.extend([
+            "## 收藏备注",
+            "",
+            summary["favorite_custom_text"],
+            "",
+        ])
+    lines.extend([
         "## 摘要",
         "",
         summary["summary_text"],
         "",
         "## 上下文引用",
         "",
-    ]
+    ])
 
     if not summary["windows"]:
         lines.append("暂无上下文引用")
@@ -600,6 +609,323 @@ async def summaries_page(request: Request):
         "selected_date": date,
         "available_dates": available_dates,
     })
+
+
+@router.post("/summaries/{summary_id}/favorite")
+async def toggle_favorite(request: Request, summary_id: int):
+    """Toggles favorite status for a summary. Returns updated card or button HTML."""
+    redirect = _require_auth(request)
+    if redirect:
+        return redirect
+    csrf_err = await _require_csrf(request)
+    if csrf_err:
+        return csrf_err
+
+    db = request.app.state.db
+    identity = await db.get_summary_identity(summary_id)
+    if not identity:
+        return HTMLResponse("<p>Summary not found</p>", status_code=404)
+
+    biz_date, group_id, biz_period = identity
+    existing = await db.get_favorite_by_natural_key(biz_date, group_id, biz_period)
+    is_from_favorites = "favorites" in request.headers.get("x-hx-target", "")
+
+    if existing:
+        await db.delete_summary_favorite(biz_date, group_id, biz_period)
+        if is_from_favorites:
+            return HTMLResponse("")
+        return _favorite_card_html(db, summary_id, False, biz_date, group_id, biz_period)
+    else:
+        form = await request.form()
+        custom_text = (form.get("custom_text") or "").strip() or None
+        if custom_text and len(custom_text) > 4000:
+            custom_text = custom_text[:4000]
+        await db.upsert_summary_favorite(biz_date, group_id, biz_period, custom_text)
+        return _favorite_card_html(db, summary_id, True, biz_date, group_id, biz_period)
+
+
+async def _favorite_card_html(
+    db, summary_id: int, is_favorite: bool,
+    biz_date: str, group_id: int, biz_period: str
+) -> HTMLResponse:
+    """Returns the full summary-item card HTML with correct favorite state."""
+    from web.routes import _format_biz_period
+    summary = await db.get_summary_with_context(summary_id)
+    if not summary:
+        return _favorite_button_html(summary_id, is_favorite)
+    fav = await db.get_favorite_by_natural_key(biz_date, group_id, biz_period) if is_favorite else None
+    custom_text = fav["custom_text"] if fav else None
+    period_label = _format_biz_period(summary.get("biz_period", "daily"))
+    group_name = summary["group_name"]
+    message_count = summary["message_count"]
+    summary_text = summary["summary_text"]
+
+    from html import escape as html_escape
+    import json as _json
+    safe_text = html_escape(summary_text)
+    safe_custom = html_escape(custom_text) if custom_text else ""
+    fav_class = " favorited" if is_favorite else ""
+    badge = '<span class="fav-badge"><svg style="width:10px;height:10px;" aria-hidden="true"><use href="#icon-star-filled"></use></svg> 已收藏</span>' if is_favorite else ""
+    star_icon = "#icon-star-filled" if is_favorite else "#icon-star"
+    star_color = 'color:var(--favorite-gold);' if is_favorite else ''
+    btn_label = "已收藏" if is_favorite else "收藏"
+    btn_class = " active" if is_favorite else ""
+    aria_label = "取消收藏" if is_favorite else "添加收藏"
+    windows_json = html_escape(_json.dumps(summary.get("windows", [])))
+
+    note_html = ""
+    if is_favorite:
+        if custom_text:
+            note_html = f"""<div class="fav-note" id="fav-note-{summary_id}">
+                <div class="fav-note-display"><div class="fav-note-content">{safe_custom}</div>
+                <div style="margin-top:8px;"><button class="btn btn-ghost btn-sm fav-note-toggle" onclick="toggleNoteEdit({summary_id})">编辑备注</button></div></div>
+                <div class="fav-note-edit" style="display:none;"><textarea maxlength="4000" placeholder="添加收藏备注...">{safe_custom}</textarea>
+                <div class="fav-note-actions"><button class="btn btn-ghost btn-sm" onclick="toggleNoteEdit({summary_id})">取消</button>
+                <button class="btn btn-sm" onclick="saveNote({summary_id})">保存</button><span class="fav-note-char-count"></span></div></div></div>"""
+        else:
+            note_html = f"""<div class="fav-note" id="fav-note-{summary_id}">
+                <div class="fav-note-display"><button class="btn btn-ghost btn-sm fav-note-toggle" onclick="toggleNoteEdit({summary_id})">+ 添加备注</button></div>
+                <div class="fav-note-edit" style="display:none;"><textarea maxlength="4000" placeholder="添加收藏备注..."></textarea>
+                <div class="fav-note-actions"><button class="btn btn-ghost btn-sm" onclick="toggleNoteEdit({summary_id})">取消</button>
+                <button class="btn btn-sm" onclick="saveNote({summary_id})">保存</button><span class="fav-note-char-count"></span></div></div></div>"""
+
+    return HTMLResponse(
+        f"""<div class="summary-item animate-fade-in{fav_class}" data-summary-item-id="{summary_id}">
+            <div class="summary-header">
+                <div class="summary-group-name">
+                    <svg style="width:18px;height:18px;vertical-align:middle;margin-right:4px;color:var(--accent);" aria-hidden="true" role="img"><use href="#icon-groups"></use></svg>
+                    {html_escape(group_name)} {badge}
+                </div>
+                <div class="summary-actions">
+                    <span class="summary-msg-count">{html_escape(period_label)}</span>
+                    <span class="summary-msg-count">{message_count} 条消息</span>
+                    <button class="btn btn-ghost btn-sm fav-btn{btn_class}"
+                            hx-post="/summaries/{summary_id}/favorite"
+                            hx-swap="outerHTML"
+                            hx-target="closest .summary-item"
+                            aria-label="{aria_label}">
+                        <svg style="width:14px;height:14px;{star_color}" aria-hidden="true"><use href="{star_icon}"></use></svg>
+                        <span>{btn_label}</span>
+                    </button>
+                    <a class="btn btn-ghost btn-sm" href="/summaries/{summary_id}/export">导出</a>
+                    <button class="btn btn-ghost btn-sm delete-btn"
+                            hx-post="/summaries/{summary_id}/delete"
+                            hx-confirm="确定删除这条摘要吗？{('此摘要已收藏，删除后收藏记录也会被删除。' if is_favorite else '')}"
+                            hx-target="closest .summary-item"
+                            hx-swap="outerHTML swap:300ms">删除</button>
+                </div>
+            </div>
+            <div class="summary-text" data-summary-id="{summary_id}" data-group-id="{group_id}"
+                 data-windows='{windows_json}'>{safe_text}</div>
+            {note_html}
+        </div>"""
+    )
+
+
+@router.patch("/summaries/{summary_id}/favorite")
+async def update_favorite_note(request: Request, summary_id: int):
+    """Updates the custom text for a favorite."""
+    redirect = _require_auth(request)
+    if redirect:
+        return redirect
+    csrf_err = await _require_csrf(request)
+    if csrf_err:
+        return csrf_err
+
+    db = request.app.state.db
+    identity = await db.get_summary_identity(summary_id)
+    if not identity:
+        return HTMLResponse("<p>Summary not found</p>", status_code=404)
+
+    biz_date, group_id, biz_period = identity
+    form = await request.form()
+    custom_text = (form.get("custom_text") or "").strip() or None
+    custom_text_max = 4000
+    if custom_text and len(custom_text) > custom_text_max:
+        return HTMLResponse(f"<p>备注最多 {custom_text_max} 字符</p>", status_code=400)
+
+    await db.upsert_summary_favorite(biz_date, group_id, biz_period, custom_text)
+    return _favorite_note_html(summary_id, custom_text)
+
+
+@router.delete("/summaries/{summary_id}/favorite")
+async def remove_favorite(request: Request, summary_id: int):
+    """Removes a favorite record."""
+    redirect = _require_auth(request)
+    if redirect:
+        return redirect
+    csrf_err = await _require_csrf(request)
+    if csrf_err:
+        return csrf_err
+
+    db = request.app.state.db
+    identity = await db.get_summary_identity(summary_id)
+    if not identity:
+        return HTMLResponse("<p>Summary not found</p>", status_code=404)
+
+    biz_date, group_id, biz_period = identity
+    await db.delete_summary_favorite(biz_date, group_id, biz_period)
+    return _favorite_button_html(summary_id, False)
+
+
+@router.post("/summaries/{summary_id}/delete")
+async def delete_summary(request: Request, summary_id: int):
+    """Deletes a summary and its associated favorite."""
+    redirect = _require_auth(request)
+    if redirect:
+        return redirect
+    csrf_err = await _require_csrf(request)
+    if csrf_err:
+        return csrf_err
+
+    db = request.app.state.db
+    deleted = await db.delete_summary(summary_id)
+    if not deleted:
+        return HTMLResponse("<p>Summary not found</p>", status_code=404)
+
+    hx_target = request.headers.get("x-hx-target", "")
+    if "favorites" in hx_target:
+        return HTMLResponse("", headers={"HX-Trigger": "favoriteRemoved"})
+    return HTMLResponse("", headers={"HX-Trigger": "summaryDeleted"})
+
+
+def _favorite_button_html(summary_id: int, is_favorite: bool) -> HTMLResponse:
+    """Returns an HTML fragment for the favorite toggle button."""
+    if is_favorite:
+        return HTMLResponse(
+            f"""<button class="btn btn-ghost btn-sm fav-btn active"
+                        hx-post="/summaries/{summary_id}/favorite"
+                        hx-swap="outerHTML"
+                        aria-label="取消收藏">
+                    <svg style="width:14px;height:14px;color:var(--favorite-gold);" aria-hidden="true"><use href="#icon-star-filled"></use></svg>
+                    <span>已收藏</span>
+                </button>"""
+        )
+    return HTMLResponse(
+        f"""<button class="btn btn-ghost btn-sm fav-btn"
+                    hx-post="/summaries/{summary_id}/favorite"
+                    hx-swap="outerHTML"
+                    aria-label="添加收藏">
+                <svg style="width:14px;height:14px;" aria-hidden="true"><use href="#icon-star"></use></svg>
+                <span>收藏</span>
+            </button>"""
+    )
+
+
+def _favorite_note_html(summary_id: int, custom_text: str | None) -> HTMLResponse:
+    """Returns an HTML fragment for the favorite note display."""
+    if custom_text:
+        from html import escape
+        safe_text = escape(custom_text).replace("\n", "<br>")
+        return HTMLResponse(
+            f"""<div class="fav-note-display" data-summary-id="{summary_id}">
+                    <div class="fav-note-content">{safe_text}</div>
+                    <button class="btn btn-ghost btn-sm fav-note-edit-btn"
+                            onclick="toggleNoteEdit({summary_id})">编辑</button>
+                </div>"""
+        )
+    return HTMLResponse(
+        f"""<div class="fav-note-empty" data-summary-id="{summary_id}">
+                <button class="btn btn-ghost btn-sm fav-note-add-btn"
+                        onclick="toggleNoteEdit({summary_id})">+ 添加备注</button>
+            </div>"""
+    )
+
+
+async def _delete_favorite_by_id(db, favorite_id: int) -> bool:
+    """Deletes a favorite record by its own id. Returns True if deleted."""
+    cursor = await db.conn.execute(
+        "DELETE FROM summary_favorites WHERE id = ?", (favorite_id,)
+    )
+    await db.conn.commit()
+    return cursor.rowcount > 0
+
+
+@router.delete("/favorites/{favorite_id}")
+async def remove_favorite_by_id(request: Request, favorite_id: int):
+    """Removes a favorite record by its own id (for orphaned favorites)."""
+    redirect = _require_auth(request)
+    if redirect:
+        return redirect
+    csrf_err = await _require_csrf(request)
+    if csrf_err:
+        return csrf_err
+
+    db = request.app.state.db
+    deleted = await _delete_favorite_by_id(db, favorite_id)
+    if not deleted:
+        return HTMLResponse("<p>Favorite not found</p>", status_code=404)
+    return HTMLResponse("")
+
+
+@router.get("/favorites")
+async def favorites_page(request: Request):
+    """Renders the favorites page showing all favorited summaries."""
+    redirect = _require_auth(request)
+    if redirect:
+        return redirect
+
+    db = request.app.state.db
+    config = request.app.state.config
+    tz = ZoneInfo(config.tz)
+
+    favorites = await db.get_all_favorites()
+    for fav in favorites:
+        fav["biz_period_label"] = _format_biz_period(fav.get("biz_period", "daily"))
+        if fav["summary_id"]:
+            fav["context_windows"] = await db.get_context_windows_by_summary(fav["summary_id"])
+        else:
+            fav["context_windows"] = []
+
+    group_ids = sorted({fav["group_id"] for fav in favorites})
+    all_groups = await db.get_all_groups()
+    group_name_map = {g["group_id"]: g["group_name"] for g in all_groups}
+
+    return templates.TemplateResponse(request, "favorites.html", {
+        "favorites": favorites,
+        "group_ids": group_ids,
+        "group_name_map": group_name_map,
+        "tz": tz,
+    })
+
+
+@router.get("/favorites/export")
+async def export_favorites(request: Request):
+    """Exports all favorites as a .zip archive."""
+    redirect = _require_auth(request)
+    if redirect:
+        return redirect
+
+    db = request.app.state.db
+    config = request.app.state.config
+    tz = ZoneInfo(config.tz)
+
+    favorites = await db.get_all_favorites()
+    if not favorites:
+        return HTMLResponse("<p>No favorites found</p>", status_code=404)
+
+    exportable = [f for f in favorites if f["summary_id"]]
+    if not exportable:
+        return HTMLResponse("<p>No exportable favorites</p>", status_code=404)
+
+    if len(exportable) == 1:
+        full = await db.get_summary_with_context(exportable[0]["summary_id"])
+        if full:
+            return _markdown_download_response(full, tz)
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for fav in exportable:
+            full = await db.get_summary_with_context(fav["summary_id"])
+            if full:
+                zf.writestr(_summary_filename(full), _render_summary_markdown(full, tz))
+    zip_buffer.seek(0)
+
+    return StreamingResponse(
+        zip_buffer,
+        media_type="application/zip",
+        headers=_download_headers("favorites.zip"),
+    )
 
 
 @router.get("/settings")
