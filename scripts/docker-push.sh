@@ -23,8 +23,9 @@ echo "========================================"
 echo ""
 
 # === 构建 ===
-echo "[1/4] Building image..."
+echo "[1/4] Building image (linux/amd64)..."
 docker build \
+    --platform linux/amd64 \
     --build-arg APP_VERSION="${VERSION}" \
     --build-arg APP_COMMIT="${COMMIT}" \
     -t "${FULL_IMAGE}:${VERSION}" \
