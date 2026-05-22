@@ -11,7 +11,14 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 
 from web import templates
-from web.auth import is_authenticated, get_csrf_token, verify_csrf
+from web.auth import (
+    SESSION_DAYS_SETTING,
+    get_csrf_token,
+    is_authenticated,
+    normalize_session_days,
+    refresh_auth_cookies,
+    verify_csrf,
+)
 
 router = APIRouter()
 
@@ -98,6 +105,33 @@ def _format_biz_period(biz_period: str | None) -> str:
     if biz_period.startswith("manual_"):
         return f"手动 ({biz_period[7:]})"
     return f"{biz_period} 摘要"
+
+
+async def _settings_form_values(db, config) -> dict:
+    """读取设置页表单值，并对需要约束的数字项做规范化。"""
+    raw_key = await db.get_setting("llm_api_key", config.llm_api_key)
+    masked_key = "••••••••" + raw_key[-4:] if len(raw_key) > 4 else "••••••••"
+    web_session_days = normalize_session_days(
+        await db.get_setting(SESSION_DAYS_SETTING, str(config.web_session_days)),
+        config.web_session_days,
+    )
+    return {
+        "summary_cron": await db.get_setting("summary_cron", config.summary_cron),
+        "summary_retention_days": await db.get_setting("summary_retention_days", str(config.summary_retention_days)),
+        "tg_push_enabled": await db.get_setting("tg_push_enabled", str(config.tg_push_enabled).lower()),
+        "web_session_days": str(web_session_days),
+        "llm_base_url": await db.get_setting("llm_base_url", config.llm_base_url),
+        "llm_api_key": masked_key,
+        "llm_model": await db.get_setting("llm_model", config.llm_model),
+        "llm_api_format": await db.get_setting("llm_api_format", config.llm_api_format),
+        "system_prompt": await db.get_setting("system_prompt", ""),
+        "user_prompt": await db.get_setting("user_prompt", ""),
+        "ad_keywords": await db.get_setting("ad_keywords", ""),
+        "alert_keywords": await db.get_setting("alert_keywords", ""),
+        "filter_bot_messages": await db.get_setting("filter_bot_messages", "true"),
+        "context_radius": await db.get_setting("context_radius", "30"),
+        "context_max_rows": await db.get_setting("context_max_rows", "50000"),
+    }
 
 
 def _activity_class(avg_daily_messages: float) -> str:
@@ -950,25 +984,7 @@ async def settings_page(request: Request):
     db = request.app.state.db
     config = request.app.state.config
 
-    raw_key = await db.get_setting("llm_api_key", config.llm_api_key)
-    masked_key = "••••••••" + raw_key[-4:] if len(raw_key) > 4 else "••••••••"
-
-    settings = {
-        "summary_cron": await db.get_setting("summary_cron", config.summary_cron),
-        "summary_retention_days": await db.get_setting("summary_retention_days", str(config.summary_retention_days)),
-        "tg_push_enabled": await db.get_setting("tg_push_enabled", str(config.tg_push_enabled).lower()),
-        "llm_base_url": await db.get_setting("llm_base_url", config.llm_base_url),
-        "llm_api_key": masked_key,
-        "llm_model": await db.get_setting("llm_model", config.llm_model),
-        "llm_api_format": await db.get_setting("llm_api_format", config.llm_api_format),
-        "system_prompt": await db.get_setting("system_prompt", ""),
-        "user_prompt": await db.get_setting("user_prompt", ""),
-        "ad_keywords": await db.get_setting("ad_keywords", ""),
-        "alert_keywords": await db.get_setting("alert_keywords", ""),
-        "filter_bot_messages": await db.get_setting("filter_bot_messages", "true"),
-        "context_radius": await db.get_setting("context_radius", "30"),
-        "context_max_rows": await db.get_setting("context_max_rows", "50000"),
-    }
+    settings = await _settings_form_values(db, config)
 
     return templates.TemplateResponse(request, "settings.html", {
         "settings": settings,
@@ -987,15 +1003,21 @@ async def save_settings(request: Request):
         return csrf_err
 
     db = request.app.state.db
+    config = request.app.state.config
     form = await request.form()
 
     for key in ("summary_cron", "summary_retention_days", "tg_push_enabled",
+                SESSION_DAYS_SETTING,
                 "llm_base_url", "llm_api_key", "llm_model", "llm_api_format",
                 "system_prompt", "user_prompt", "ad_keywords", "alert_keywords",
                 "filter_bot_messages", "context_radius", "context_max_rows"):
         value = form.get(key, "")
         if key == "llm_api_key" and value.startswith("••••"):
             continue
+        if key == SESSION_DAYS_SETTING:
+            if key not in form or str(value).strip() == "":
+                continue
+            value = str(normalize_session_days(value, config.web_session_days))
         if key == "context_radius":
             try:
                 value = str(max(5, min(100, int(value or "30"))))
@@ -1017,35 +1039,23 @@ async def save_settings(request: Request):
     if bot and hasattr(bot, "_reload_filter_bots"):
         await bot._reload_filter_bots()
 
+    request.app.state.web_session_days = normalize_session_days(
+        await db.get_setting(SESSION_DAYS_SETTING, str(config.web_session_days)),
+        config.web_session_days,
+    )
+    request.app.state.web_session_days_loaded = True
+
     scheduler = request.app.state.scheduler
     if scheduler is not None:
         await scheduler.reload_jobs()
 
-    config = request.app.state.config
-    raw_key = await db.get_setting("llm_api_key", config.llm_api_key)
-    masked_key = "••••••••" + raw_key[-4:] if len(raw_key) > 4 else "••••••••"
-
-    settings = {
-        "summary_cron": await db.get_setting("summary_cron", config.summary_cron),
-        "summary_retention_days": await db.get_setting("summary_retention_days", str(config.summary_retention_days)),
-        "tg_push_enabled": await db.get_setting("tg_push_enabled", str(config.tg_push_enabled).lower()),
-        "llm_base_url": await db.get_setting("llm_base_url", config.llm_base_url),
-        "llm_api_key": masked_key,
-        "llm_model": await db.get_setting("llm_model", config.llm_model),
-        "llm_api_format": await db.get_setting("llm_api_format", config.llm_api_format),
-        "system_prompt": await db.get_setting("system_prompt", ""),
-        "user_prompt": await db.get_setting("user_prompt", ""),
-        "ad_keywords": await db.get_setting("ad_keywords", ""),
-        "alert_keywords": await db.get_setting("alert_keywords", ""),
-        "filter_bot_messages": await db.get_setting("filter_bot_messages", "true"),
-        "context_radius": await db.get_setting("context_radius", "30"),
-        "context_max_rows": await db.get_setting("context_max_rows", "50000"),
-    }
-
-    return templates.TemplateResponse(request, "settings.html", {
+    settings = await _settings_form_values(db, config)
+    response = templates.TemplateResponse(request, "settings.html", {
         "settings": settings,
         "saved": True,
     })
+    refresh_auth_cookies(response, request)
+    return response
 
 
 @router.post("/settings/test-push")

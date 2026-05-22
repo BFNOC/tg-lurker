@@ -39,6 +39,14 @@
         <div class="section-divider"></div>
 
         <div class="form-group">
+            <label for="web_session_days">Web 登录有效期</label>
+            <input type="number" id="web_session_days" name="web_session_days" value="{{ settings.web_session_days }}" min="1" max="365">
+            <div class="form-hint">管理后台登录态保留天数，默认 30 天</div>
+        </div>
+
+        <div class="section-divider"></div>
+
+        <div class="form-group">
             <label for="tg_push">Telegram 推送</label>
             <select id="tg_push" name="tg_push_enabled">
                 <option value="true" {% if settings.tg_push_enabled == "true" %}selected{% endif %}>已启用</option>

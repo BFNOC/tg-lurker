@@ -28,6 +28,7 @@ class Config:
     proxy_port: int = 0
     web_port: int = 8080
     web_password: str = ""
+    web_session_days: int = 30
     tg_push_enabled: bool = True
     tz: str = "Asia/Shanghai"
 
@@ -50,6 +51,10 @@ def load_config(env_path: str | None = None) -> Config:
 
     web_port_raw = os.getenv("WEB_PORT", "8080").strip()
     web_port = int(web_port_raw) if web_port_raw else 8080
+
+    web_session_days_raw = os.getenv("WEB_SESSION_DAYS", "30").strip()
+    web_session_days = int(web_session_days_raw) if web_session_days_raw else 30
+    web_session_days = max(1, min(365, web_session_days))
 
     retention_raw = os.getenv("SUMMARY_RETENTION_DAYS", "7").strip()
     retention = int(retention_raw) if retention_raw else 7
@@ -75,6 +80,7 @@ def load_config(env_path: str | None = None) -> Config:
         proxy_port=proxy_port,
         web_port=web_port,
         web_password=_require("WEB_PASSWORD"),
+        web_session_days=web_session_days,
         tg_push_enabled=tg_push,
         tz=os.getenv("TZ", "Asia/Shanghai").strip(),
     )

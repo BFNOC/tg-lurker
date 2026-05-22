@@ -69,7 +69,7 @@ docker compose up --build
 - **消息引用**: 摘要中使用 `[m:消息ID]` 标注来源，支持上下文回溯
 - **LRU 上下文清理**: context_messages 表有行数上限，按 last_accessed_at 淘汰
 - **去重策略**: 精确哈希 + trigram 相似度(0.85) + 关键词黑名单(命中>=2)
-- **Session 认证**: itsdangerous 签名 cookie，CSRF double-submit
+- **Session 认证**: itsdangerous 签名 cookie，默认 30 天有效，CSRF double-submit
 - **设置热更新**: LLM 配置、告警关键词等存 settings 表，运行时可改
 
 ## 数据库 Schema

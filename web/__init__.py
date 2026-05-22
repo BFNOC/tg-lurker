@@ -19,12 +19,19 @@ class CSRFContextMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         """Reads or generates a CSRF token, attaches it to request.state, and ensures the cookie is set."""
-        from web.auth import get_csrf_token, set_csrf_cookie, CSRF_COOKIE
+        from web.auth import (
+            CSRF_COOKIE,
+            ensure_session_days_loaded,
+            get_csrf_token,
+            get_session_max_age,
+            set_csrf_cookie,
+        )
+        await ensure_session_days_loaded(request)
         token = get_csrf_token(request)
         request.state.csrf_token = token
         response = await call_next(request)
         if not request.cookies.get(CSRF_COOKIE):
-            set_csrf_cookie(response, token)
+            set_csrf_cookie(response, token, get_session_max_age(request))
         return response
 
 
@@ -35,6 +42,8 @@ def create_app(config: Config, db: Database, bot=None, scheduler=None) -> FastAP
     app.state.db = db
     app.state.bot = bot
     app.state.scheduler = scheduler
+    app.state.web_session_days = config.web_session_days
+    app.state.web_session_days_loaded = False
 
     app.add_middleware(CSRFContextMiddleware)
     app.mount("/static", StaticFiles(directory=str(_HERE / "static")), name="static")

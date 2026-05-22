@@ -26,7 +26,7 @@ web/
 
 ## 认证机制
 
-- Cookie-based session (`tg_lurker_session`)，itsdangerous 签名，24h 过期
+- Cookie-based session (`tg_lurker_session`)，itsdangerous 签名，默认 30 天过期，可通过 `/settings` 或 `WEB_SESSION_DAYS` 调整
 - CSRF: double-submit cookie pattern (`tg_lurker_csrf`)
 - 所有 POST 路由需验证 CSRF token
 

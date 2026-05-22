@@ -105,6 +105,7 @@ python main.py
 | `PROXY_HOST` | 否 | - | Telegram 代理地址 |
 | `PROXY_PORT` | 否 | - | Telegram 代理端口 |
 | `WEB_PORT` | 否 | `8080` | Web UI 端口 |
+| `WEB_SESSION_DAYS` | 否 | `30` | Web 登录有效期（天，可在设置页修改） |
 | `TG_PUSH_ENABLED` | 否 | `true` | Telegram 推送开关 |
 | `TZ` | 否 | `Asia/Shanghai` | 时区 |
 
