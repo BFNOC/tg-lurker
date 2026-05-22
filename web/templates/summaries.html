@@ -141,7 +141,7 @@
         <div class="summary-item animate-fade-in {% if s.is_favorite %}favorited{% endif %}" style="animation-delay: {{ loop.index0 * 0.1 }}s;" data-summary-item-id="{{ s.id }}">
             <div class="summary-header">
                 <div class="summary-group-name">
-                    <svg style="width:18px;height:18px;vertical-align:middle;margin-right:4px;color:var(--accent);" aria-hidden="true" role="img"><use href="#icon-groups"></use></svg>
+                    <svg style="width:18px;height:18px;vertical-align:middle;margin-right:6px;color:var(--accent);" aria-hidden="true" role="img"><use href="#icon-groups"></use></svg>
                     {{ s.group_name }}
                     {% if s.is_favorite %}<span class="fav-badge"><svg style="width:10px;height:10px;" aria-hidden="true"><use href="#icon-star-filled"></use></svg> 已收藏</span>{% endif %}
                 </div>
@@ -181,8 +181,12 @@
             <div class="fav-note" id="fav-note-{{ s.id }}">
                 {% if s.favorite_custom_text %}
                 <div class="fav-note-display">
+                    <div class="fav-note-label">
+                        <svg aria-hidden="true"><use href="#icon-heart-filled"></use></svg>
+                        收藏备注
+                    </div>
                     <div class="fav-note-content">{{ s.favorite_custom_text }}</div>
-                    <div style="margin-top:8px;">
+                    <div style="margin-top:10px;">
                         <button class="btn btn-ghost btn-sm fav-note-toggle" onclick="toggleNoteEdit({{ s.id }})">编辑备注</button>
                     </div>
                 </div>
@@ -196,7 +200,10 @@
                 </div>
                 {% else %}
                 <div class="fav-note-display">
-                    <button class="btn btn-ghost btn-sm fav-note-toggle" onclick="toggleNoteEdit({{ s.id }})">+ 添加备注</button>
+                    <button class="btn btn-ghost btn-sm fav-note-toggle" onclick="toggleNoteEdit({{ s.id }})">
+                        <svg style="width:12px;height:12px;" aria-hidden="true"><use href="#icon-star"></use></svg>
+                        添加备注
+                    </button>
                 </div>
                 <div class="fav-note-edit" style="display:none;">
                     <textarea maxlength="4000" placeholder="添加收藏备注..."></textarea>

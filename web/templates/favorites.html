@@ -7,12 +7,18 @@
         <h1>收藏夹</h1>
         <p>管理收藏的摘要，收藏的摘要不会被自动删除</p>
     </div>
-    <a class="btn btn-ghost btn-sm" href="/favorites/export">导出全部</a>
+    <a class="btn btn-ghost btn-sm" href="/favorites/export">
+        <svg style="width:14px;height:14px;" aria-hidden="true"><use href="#icon-summaries"></use></svg>
+        导出全部
+    </a>
 </div>
 
 <div class="sub-tabs" style="display:flex;gap:8px;margin-bottom:24px;">
     <a href="/summaries" class="btn btn-ghost btn-sm">摘要</a>
-    <a href="/favorites" class="btn btn-sm" style="background:var(--accent);color:#fff;">收藏</a>
+    <a href="/favorites" class="btn btn-sm" style="background:var(--accent);color:#fff;">
+        <svg style="width:12px;height:12px;" aria-hidden="true"><use href="#icon-star-filled"></use></svg>
+        收藏
+    </a>
 </div>
 
 <div class="card animate-fade-in">
@@ -21,7 +27,7 @@
         <div class="summary-item animate-fade-in favorited" style="animation-delay: {{ loop.index0 * 0.1 }}s;" data-summary-item-id="{{ fav.summary_id or '' }}">
             <div class="summary-header">
                 <div class="summary-group-name">
-                    <svg style="width:18px;height:18px;vertical-align:middle;margin-right:4px;color:var(--accent);" aria-hidden="true" role="img"><use href="#icon-groups"></use></svg>
+                    <svg style="width:18px;height:18px;vertical-align:middle;margin-right:6px;color:var(--accent);" aria-hidden="true" role="img"><use href="#icon-groups"></use></svg>
                     {% if fav.group_name %}
                         {{ fav.group_name }}
                     {% elif fav.group_id in group_name_map %}
@@ -31,7 +37,7 @@
                     {% endif %}
                     <span class="fav-badge"><svg style="width:10px;height:10px;" aria-hidden="true"><use href="#icon-star-filled"></use></svg> 已收藏</span>
                     {% if not fav.summary_id %}
-                        <span style="font-size:11px;color:var(--danger);margin-left:8px;">源摘要已删除</span>
+                        <span style="font-size:11px;color:var(--danger);margin-left:8px;background:var(--danger-bg);padding:2px 8px;border-radius:100px;">源摘要已删除</span>
                     {% endif %}
                 </div>
                 <div class="summary-actions">
@@ -73,9 +79,13 @@
             <div class="fav-note" id="fav-note-{{ fav.summary_id or fav.favorite_id }}">
                 {% if fav.custom_text %}
                 <div class="fav-note-display">
+                    <div class="fav-note-label">
+                        <svg aria-hidden="true"><use href="#icon-heart-filled"></use></svg>
+                        收藏备注
+                    </div>
                     <div class="fav-note-content">{{ fav.custom_text }}</div>
                     {% if fav.summary_id %}
-                    <div style="margin-top:8px;">
+                    <div style="margin-top:10px;">
                         <button class="btn btn-ghost btn-sm fav-note-toggle" onclick="toggleNoteEdit({{ fav.summary_id }})">编辑备注</button>
                     </div>
                     {% endif %}
@@ -93,7 +103,10 @@
                 {% else %}
                 <div class="fav-note-display">
                     {% if fav.summary_id %}
-                    <button class="btn btn-ghost btn-sm fav-note-toggle" onclick="toggleNoteEdit({{ fav.summary_id }})">+ 添加备注</button>
+                    <button class="btn btn-ghost btn-sm fav-note-toggle" onclick="toggleNoteEdit({{ fav.summary_id }})">
+                        <svg style="width:12px;height:12px;" aria-hidden="true"><use href="#icon-star"></use></svg>
+                        添加备注
+                    </button>
                     {% endif %}
                 </div>
                 {% if fav.summary_id %}
@@ -109,6 +122,9 @@
                 {% endif %}
             </div>
         </div>
+        {% if not loop.last %}
+        <div class="section-divider" style="margin:20px 0;"></div>
+        {% endif %}
         {% endfor %}
     {% else %}
         <div class="empty-state">
