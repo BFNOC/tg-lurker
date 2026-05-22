@@ -634,14 +634,14 @@ async def toggle_favorite(request: Request, summary_id: int):
         await db.delete_summary_favorite(biz_date, group_id, biz_period)
         if is_from_favorites:
             return HTMLResponse("")
-        return _favorite_card_html(db, summary_id, False, biz_date, group_id, biz_period)
+        return await _favorite_card_html(db, summary_id, False, biz_date, group_id, biz_period)
     else:
         form = await request.form()
         custom_text = (form.get("custom_text") or "").strip() or None
         if custom_text and len(custom_text) > 4000:
             custom_text = custom_text[:4000]
         await db.upsert_summary_favorite(biz_date, group_id, biz_period, custom_text)
-        return _favorite_card_html(db, summary_id, True, biz_date, group_id, biz_period)
+        return await _favorite_card_html(db, summary_id, True, biz_date, group_id, biz_period)
 
 
 async def _favorite_card_html(
@@ -649,13 +649,25 @@ async def _favorite_card_html(
     biz_date: str, group_id: int, biz_period: str
 ) -> HTMLResponse:
     """Returns the full summary-item card HTML with correct favorite state."""
-    from web.routes import _format_biz_period
+    try:
+        return await _favorite_card_html_inner(db, summary_id, is_favorite, biz_date, group_id, biz_period)
+    except Exception:
+        logger.exception("Error in _favorite_card_html for summary_id=%d", summary_id)
+        return _favorite_button_html(summary_id, is_favorite)
+
+
+async def _favorite_card_html_inner(
+    db, summary_id: int, is_favorite: bool,
+    biz_date: str, group_id: int, biz_period: str
+) -> HTMLResponse:
+    """Core implementation of favorite card HTML generation."""
     summary = await db.get_summary_with_context(summary_id)
     if not summary:
         return _favorite_button_html(summary_id, is_favorite)
     fav = await db.get_favorite_by_natural_key(biz_date, group_id, biz_period) if is_favorite else None
     custom_text = fav["custom_text"] if fav else None
     period_label = _format_biz_period(summary.get("biz_period", "daily"))
+
     group_name = summary["group_name"]
     message_count = summary["message_count"]
     summary_text = summary["summary_text"]

@@ -248,12 +248,23 @@ async def seed():
                     })
                 await db.insert_context_messages(window_id, ctx_messages)
 
+    # Seed favorites (mark some summaries as favorites with custom notes)
+    fav_count = 0
+    for days_ago in [1, 2, 3]:
+        past_date = (now - timedelta(days=days_ago)).strftime("%Y-%m-%d")
+        for gid, gname in FAKE_GROUPS[:2]:
+            await db.upsert_summary_favorite(
+                past_date, gid, "daily",
+                custom_text=f"这是 {gname} 在 {past_date} 的收藏备注，记录了重要的技术讨论。"
+            )
+            fav_count += 1
+
     # Seed settings
     await db.set_setting("tg_push_enabled", "true")
     await db.set_setting("summary_retention_days", "7")
 
     await db.close()
-    print(f"[SEED] Done: {len(FAKE_GROUPS)} groups, messages for today, summaries for 5 days")
+    print(f"[SEED] Done: {len(FAKE_GROUPS)} groups, messages for today, summaries for 5 days, {fav_count} favorites")
 
 
 if __name__ == "__main__":
