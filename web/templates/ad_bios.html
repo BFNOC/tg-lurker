@@ -1,0 +1,243 @@
+{% extends "base.html" %}
+{% block title_suffix %} - 广告 Bio{% endblock %}
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>广告 Bio</h1>
+        <p>按发送者合并查看 Bio 原文和多群出现记录</p>
+    </div>
+</div>
+
+<div class="bio-stats animate-fade-in">
+    <div class="bio-stat">
+        <span>候选账号</span>
+        <strong>{{ total }}</strong>
+    </div>
+    <div class="bio-stat">
+        <span>待抓取</span>
+        <strong>{{ queue_stats.pending }}</strong>
+    </div>
+    <div class="bio-stat">
+        <span>抓取中</span>
+        <strong>{{ queue_stats.running }}</strong>
+    </div>
+    <div class="bio-stat">
+        <span>失败</span>
+        <strong>{{ queue_stats.failed }}</strong>
+    </div>
+</div>
+
+<div class="card animate-fade-in" style="animation-delay: 0.05s;">
+    <form method="get" action="/ad-bios" class="bio-filter">
+        <div class="form-group">
+            <label for="q">搜索</label>
+            <input id="q" name="q" type="search" value="{{ q }}" placeholder="Bio、用户名、昵称、最近发言">
+        </div>
+        <div class="form-group">
+            <label for="group_id">来源群</label>
+            <select id="group_id" name="group_id">
+                <option value="">全部</option>
+                {% for g in groups %}
+                <option value="{{ g.group_id }}" {% if selected_group == g.group_id|string %}selected{% endif %}>
+                    {{ g.group_name }} ({{ g.sender_count }})
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="form-group">
+            <label for="status">状态</label>
+            <select id="status" name="status">
+                <option value="all" {% if status == "all" %}selected{% endif %}>全部</option>
+                <option value="pending" {% if status == "pending" %}selected{% endif %}>队列中</option>
+                <option value="fetched" {% if status == "fetched" %}selected{% endif %}>已抓取</option>
+                <option value="failed" {% if status == "failed" %}selected{% endif %}>失败/限流</option>
+            </select>
+        </div>
+        <button type="submit" class="btn">筛选</button>
+    </form>
+</div>
+
+<div class="card animate-fade-in" style="animation-delay: 0.1s;">
+    {% if entries %}
+    <div class="bio-list">
+        {% for e in entries %}
+        <article class="bio-row">
+            <div class="bio-main">
+                <div class="bio-user-line">
+                    <strong>{{ e.display_name or e.username or e.sender_id }}</strong>
+                    {% if e.username %}
+                    <a href="https://t.me/{{ e.username }}" target="_blank" rel="noopener noreferrer">@{{ e.username }}</a>
+                    {% endif %}
+                    <span>ID: {{ e.sender_id }}</span>
+                    <span>{{ e.fetch_status }}</span>
+                </div>
+                <div class="bio-meta">
+                    <span>出现群组：{{ e.group_names or "未知" }}{% if e.group_count > 5 %} 等 {{ e.group_count }} 个{% endif %}</span>
+                    <span>最近发言：{{ e.last_seen_at | timestamp_to_datetime }}</span>
+                    <span>Bio 抓取：{{ e.fetched_at | timestamp_to_datetime }}</span>
+                </div>
+                {% if e.bio_text %}
+                <div class="bio-text">{{ e.bio_text | linkify_bio }}</div>
+                {% elif e.last_error %}
+                <div class="bio-empty">抓取失败：{{ e.last_error }}</div>
+                {% else %}
+                <div class="bio-empty">尚未抓取到 Bio</div>
+                {% endif %}
+                {% if e.last_message_text %}
+                <div class="bio-last-msg">最近消息：{{ e.last_message_text }}</div>
+                {% endif %}
+            </div>
+            <div class="bio-actions" id="queue-{{ e.sender_id }}">
+                <form hx-post="/ad-bios/queue" hx-target="#queue-{{ e.sender_id }}" hx-swap="innerHTML">
+                    <input type="hidden" name="sender_id" value="{{ e.sender_id }}">
+                    <input type="hidden" name="force" value="true">
+                    <input type="hidden" name="reason" value="广告 Bio 页手动重新排队">
+                    <button type="submit" class="btn btn-sm btn-ghost">重新排队</button>
+                </form>
+                {% if e.queue_status in ("pending", "running") %}
+                <span class="bio-queue-state">{{ e.queue_status }}</span>
+                {% endif %}
+            </div>
+        </article>
+        {% endfor %}
+    </div>
+
+    <div class="bio-pagination">
+        {% if page > 1 %}
+        <a class="btn btn-sm btn-ghost" href="/ad-bios?q={{ q|urlencode }}&group_id={{ selected_group }}&status={{ status }}&page={{ page - 1 }}">上一页</a>
+        {% endif %}
+        <span>{{ page }} / {{ total_pages }}</span>
+        {% if page < total_pages %}
+        <a class="btn btn-sm btn-ghost" href="/ad-bios?q={{ q|urlencode }}&group_id={{ selected_group }}&status={{ status }}&page={{ page + 1 }}">下一页</a>
+        {% endif %}
+    </div>
+    {% else %}
+    <div class="empty-state">
+        <svg aria-hidden="true" role="img"><use href="#icon-eye"></use></svg>
+        <h3>暂无 Bio 候选</h3>
+        <p>命中引流词的发送者会进入低速抓取队列，也可以在消息页手动加入队列。</p>
+    </div>
+    {% endif %}
+</div>
+
+<style>
+    .bio-stats {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+        margin-bottom: 16px;
+    }
+    .bio-stat {
+        padding: 14px 16px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--card-bg);
+    }
+    .bio-stat span {
+        display: block;
+        font-size: 12px;
+        color: var(--text-muted);
+        margin-bottom: 4px;
+    }
+    .bio-stat strong {
+        font-size: 22px;
+        color: var(--text);
+    }
+    .bio-filter {
+        display: grid;
+        grid-template-columns: minmax(180px, 2fr) minmax(160px, 1fr) minmax(140px, 1fr) auto;
+        gap: 12px;
+        align-items: end;
+    }
+    .bio-filter .form-group { margin-bottom: 0; }
+    .bio-list {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+    }
+    .bio-row {
+        display: flex;
+        gap: 16px;
+        padding: 14px 0;
+        border-bottom: 1px solid var(--border);
+    }
+    .bio-row:last-child { border-bottom: none; }
+    .bio-main { flex: 1; min-width: 0; }
+    .bio-user-line {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        font-size: 13px;
+        margin-bottom: 6px;
+    }
+    .bio-user-line strong { color: var(--accent); }
+    .bio-user-line span {
+        color: var(--text-muted);
+        font-size: 11px;
+        padding: 2px 6px;
+        border-radius: 4px;
+        background: var(--bg);
+    }
+    .bio-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        font-size: 12px;
+        color: var(--text-muted);
+        margin-bottom: 8px;
+    }
+    .bio-text {
+        padding: 10px;
+        border-radius: 6px;
+        background: var(--bg);
+        white-space: normal;
+        word-break: break-word;
+        line-height: 1.6;
+        font-size: 13px;
+    }
+    .bio-text a { font-weight: 700; }
+    .bio-empty {
+        font-size: 13px;
+        color: var(--text-muted);
+        padding: 10px;
+        border-radius: 6px;
+        background: var(--bg);
+    }
+    .bio-last-msg {
+        margin-top: 8px;
+        font-size: 12px;
+        color: var(--text-muted);
+        word-break: break-word;
+    }
+    .bio-actions {
+        width: 104px;
+        flex-shrink: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 8px;
+    }
+    .bio-queue-state {
+        font-size: 11px;
+        color: var(--text-muted);
+    }
+    .bio-pagination {
+        margin-top: 16px;
+        padding-top: 12px;
+        border-top: 1px solid var(--border);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        gap: 10px;
+        color: var(--text-muted);
+        font-size: 13px;
+    }
+    @media (max-width: 760px) {
+        .bio-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .bio-filter { grid-template-columns: 1fr; }
+        .bio-row { flex-direction: column; }
+        .bio-actions { width: auto; align-items: flex-start; }
+    }
+</style>
+{% endblock %}

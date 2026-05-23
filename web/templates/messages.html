@@ -93,12 +93,21 @@
             </div>
             <div class="msg-body">{{ m.text[:200] }}{% if m.text|length > 200 %}...{% endif %}</div>
             {% if m.sender_id %}
-            <div class="msg-actions" id="block-{{ m.message_id }}">
-                <form style="display:inline;" hx-post="/messages/block-sender" hx-target="#block-{{ m.message_id }}" hx-swap="innerHTML">
+            <div class="msg-actions">
+                <span id="bio-{{ m.group_id }}-{{ m.message_id }}">
+                    <form style="display:inline;" hx-post="/ad-bios/queue" hx-target="#bio-{{ m.group_id }}-{{ m.message_id }}" hx-swap="innerHTML">
+                        <input type="hidden" name="sender_id" value="{{ m.sender_id }}">
+                        <input type="hidden" name="reason" value="消息页手动加入 Bio 队列">
+                        <button type="submit" class="btn-bio">Bio队列</button>
+                    </form>
+                </span>
+                <span id="block-{{ m.group_id }}-{{ m.message_id }}">
+                <form style="display:inline;" hx-post="/messages/block-sender" hx-target="#block-{{ m.group_id }}-{{ m.message_id }}" hx-swap="innerHTML">
                     <input type="hidden" name="sender_id" value="{{ m.sender_id }}">
                     <input type="hidden" name="sender_name" value="{{ m.sender_name or '' }}">
                     <button type="submit" class="btn-block">拉黑</button>
                 </form>
+                </span>
             </div>
             {% endif %}
         </div>
@@ -186,7 +195,26 @@
         color: var(--text);
         word-break: break-word;
     }
-    .msg-actions { flex-shrink: 0; }
+    .msg-actions {
+        flex-shrink: 0;
+        display: flex;
+        gap: 6px;
+        align-items: center;
+    }
+    .btn-bio {
+        font-size: 11px;
+        font-weight: 700;
+        color: var(--accent);
+        background: var(--accent-light);
+        border: 1px solid var(--accent);
+        border-radius: 4px;
+        padding: 2px 8px;
+        cursor: pointer;
+        opacity: 0;
+        transition: opacity 0.15s;
+    }
+    .msg-row:hover .btn-bio { opacity: 1; }
+    .btn-bio:hover { background: var(--accent); color: #fff; }
     .btn-block {
         font-size: 11px;
         font-weight: 700;

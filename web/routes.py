@@ -363,6 +363,87 @@ async def messages_page(request: Request):
     })
 
 
+@router.get("/ad-bios")
+async def ad_bios_page(request: Request):
+    """Renders the Bio advertising collection page grouped by sender."""
+    redirect = _require_auth(request)
+    if redirect:
+        return redirect
+
+    db = request.app.state.db
+    query = request.query_params.get("q", "").strip()
+    status = request.query_params.get("status", "all")
+    if status not in ("all", "pending", "fetched", "failed"):
+        status = "all"
+    group_id_raw = request.query_params.get("group_id", "")
+    try:
+        group_id = int(group_id_raw) if group_id_raw else None
+    except ValueError:
+        group_id = None
+        group_id_raw = ""
+    try:
+        page = max(1, int(request.query_params.get("page", "1")))
+    except ValueError:
+        page = 1
+    per_page = 50
+
+    total = await db.count_ad_bio_entries(query, group_id, status)
+    entries = await db.get_ad_bio_entries(
+        query=query,
+        group_id=group_id,
+        status=status,
+        limit=per_page,
+        offset=(page - 1) * per_page,
+    )
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    groups = await db.get_ad_bio_source_groups()
+    queue_stats = await db.get_bio_queue_stats()
+
+    return templates.TemplateResponse(request, "ad_bios.html", {
+        "entries": entries,
+        "groups": groups,
+        "queue_stats": queue_stats,
+        "q": query,
+        "selected_group": group_id_raw,
+        "status": status,
+        "total": total,
+        "page": page,
+        "total_pages": total_pages,
+    })
+
+
+@router.post("/ad-bios/queue")
+async def queue_ad_bio(request: Request):
+    """Queues a sender for low-speed Bio fetching and returns an inline status."""
+    redirect = _require_auth(request)
+    if redirect:
+        return redirect
+    csrf_err = await _require_csrf(request)
+    if csrf_err:
+        return csrf_err
+
+    form = await request.form()
+    try:
+        sender_id = int(form.get("sender_id", "0"))
+    except (TypeError, ValueError):
+        sender_id = 0
+    force = str(form.get("force", "")).lower() == "true"
+    reason = str(form.get("reason", "手动加入 Bio 队列")).strip() or "手动加入 Bio 队列"
+
+    queued = False
+    if sender_id:
+        queued = await request.app.state.db.queue_bio_fetch(
+            sender_id,
+            reason=reason,
+            priority=100 if force else 50,
+            force=force,
+        )
+
+    if queued:
+        return HTMLResponse("<span style='color:var(--success);font-size:12px;font-weight:700;'>已加入 Bio 队列</span>")
+    return HTMLResponse("<span style='color:var(--text-muted);font-size:12px;font-weight:700;'>缓存有效或已在队列</span>")
+
+
 @router.get("/dashboard")
 async def dashboard(request: Request):
     """Renders the main dashboard with today's stats and group overview."""
@@ -1038,6 +1119,8 @@ async def save_settings(request: Request):
         await bot._reload_alert_keywords()
     if bot and hasattr(bot, "_reload_filter_bots"):
         await bot._reload_filter_bots()
+    if bot and hasattr(bot, "_reload_ad_keywords"):
+        await bot._reload_ad_keywords()
 
     request.app.state.web_session_days = normalize_session_days(
         await db.get_setting(SESSION_DAYS_SETTING, str(config.web_session_days)),

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import sqlite3
+import time
 from collections import Counter
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -90,6 +92,48 @@ CREATE TABLE IF NOT EXISTS alerts (
     created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
 );
 
+CREATE TABLE IF NOT EXISTS sender_profiles (
+    sender_id INTEGER PRIMARY KEY,
+    access_hash INTEGER,
+    username TEXT,
+    display_name TEXT,
+    bio_text TEXT,
+    bio_hash TEXT,
+    fetched_at INTEGER,
+    next_fetch_at INTEGER NOT NULL DEFAULT 0,
+    fetch_status TEXT NOT NULL DEFAULT 'new',
+    last_error TEXT,
+    first_seen_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+    last_seen_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+    last_group_id INTEGER,
+    last_group_name TEXT,
+    last_message_id INTEGER,
+    last_message_text TEXT,
+    is_ad_candidate INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS sender_group_seen (
+    sender_id INTEGER NOT NULL,
+    group_id INTEGER NOT NULL,
+    group_name TEXT NOT NULL,
+    message_count INTEGER NOT NULL DEFAULT 0,
+    first_seen_at INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL,
+    last_message_id INTEGER,
+    PRIMARY KEY(sender_id, group_id)
+);
+
+CREATE TABLE IF NOT EXISTS bio_fetch_queue (
+    sender_id INTEGER PRIMARY KEY,
+    priority INTEGER NOT NULL DEFAULT 0,
+    reason TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    next_run_at INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+    updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_messages_biz_date ON messages(biz_date);
 CREATE INDEX IF NOT EXISTS idx_messages_group_date ON messages(group_id, biz_date);
 CREATE INDEX IF NOT EXISTS idx_messages_group_msgid ON messages(group_id, message_id);
@@ -99,6 +143,10 @@ CREATE INDEX IF NOT EXISTS idx_summaries_group_date ON summaries(group_id, biz_d
 CREATE INDEX IF NOT EXISTS idx_context_windows_summary ON context_windows(summary_id);
 CREATE INDEX IF NOT EXISTS idx_context_messages_window ON context_messages(window_id);
 CREATE INDEX IF NOT EXISTS idx_alerts_created ON alerts(created_at);
+CREATE INDEX IF NOT EXISTS idx_sender_profiles_candidate ON sender_profiles(is_ad_candidate, last_seen_at);
+CREATE INDEX IF NOT EXISTS idx_sender_profiles_fetch ON sender_profiles(fetch_status, next_fetch_at);
+CREATE INDEX IF NOT EXISTS idx_sender_group_seen_group ON sender_group_seen(group_id, last_seen_at);
+CREATE INDEX IF NOT EXISTS idx_bio_fetch_queue_next ON bio_fetch_queue(status, next_run_at, priority);
 
 CREATE TABLE IF NOT EXISTS summary_favorites (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1041,6 +1089,377 @@ class Database:
         cursor = await self.conn.execute("SELECT COUNT(*) FROM alerts")
         row = await cursor.fetchone()
         return row[0] if row else 0
+
+    # --- sender profiles / Bio queue ---
+
+    @staticmethod
+    def _bio_hash(text: str | None) -> str:
+        """返回 Bio 原文的稳定摘要，用于判断是否发生变化。"""
+        return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _message_preview(text: str | None, max_len: int = 500) -> str:
+        """截断最近发言，避免画像表被长消息撑大。"""
+        value = (text or "").strip()
+        return value[:max_len]
+
+    async def upsert_sender_observation(
+        self,
+        sender_id: int | None,
+        access_hash: int | None,
+        username: str | None,
+        display_name: str | None,
+        group_id: int,
+        group_name: str,
+        message_id: int,
+        message_text: str,
+        timestamp: int,
+    ) -> None:
+        """记录发送者最近一次出现，并按 sender_id 合并多个群的出现情况。"""
+        if sender_id is None:
+            return
+
+        preview = self._message_preview(message_text)
+        await self.conn.execute(
+            """INSERT INTO sender_profiles
+               (sender_id, access_hash, username, display_name, first_seen_at, last_seen_at,
+                last_group_id, last_group_name, last_message_id, last_message_text)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(sender_id) DO UPDATE SET
+                   access_hash = COALESCE(excluded.access_hash, sender_profiles.access_hash),
+                   username = COALESCE(excluded.username, sender_profiles.username),
+                   display_name = COALESCE(excluded.display_name, sender_profiles.display_name),
+                   last_seen_at = excluded.last_seen_at,
+                   last_group_id = excluded.last_group_id,
+                   last_group_name = excluded.last_group_name,
+                   last_message_id = excluded.last_message_id,
+                   last_message_text = excluded.last_message_text""",
+            (
+                sender_id,
+                access_hash,
+                username,
+                display_name,
+                timestamp,
+                timestamp,
+                group_id,
+                group_name,
+                message_id,
+                preview,
+            ),
+        )
+        await self.conn.execute(
+            """INSERT INTO sender_group_seen
+               (sender_id, group_id, group_name, message_count, first_seen_at, last_seen_at, last_message_id)
+               VALUES (?, ?, ?, 1, ?, ?, ?)
+               ON CONFLICT(sender_id, group_id) DO UPDATE SET
+                   group_name = excluded.group_name,
+                   message_count = sender_group_seen.message_count + 1,
+                   last_seen_at = excluded.last_seen_at,
+                   last_message_id = excluded.last_message_id""",
+            (sender_id, group_id, group_name, timestamp, timestamp, message_id),
+        )
+        await self.conn.commit()
+
+    async def queue_bio_fetch(
+        self,
+        sender_id: int | None,
+        reason: str,
+        priority: int = 0,
+        force: bool = False,
+    ) -> bool:
+        """将发送者加入 Bio 抓取队列；未过缓存期时默认不重复入队。"""
+        if sender_id is None:
+            return False
+
+        now = int(time.time())
+        await self.conn.execute(
+            """INSERT INTO sender_profiles (sender_id, first_seen_at, last_seen_at, is_ad_candidate)
+               VALUES (?, ?, ?, 1)
+               ON CONFLICT(sender_id) DO UPDATE SET is_ad_candidate = 1""",
+            (sender_id, now, now),
+        )
+
+        cursor = await self.conn.execute(
+            "SELECT next_fetch_at FROM sender_profiles WHERE sender_id = ?",
+            (sender_id,),
+        )
+        row = await cursor.fetchone()
+        if not force and row and row[0] and row[0] > now:
+            await self.conn.commit()
+            return False
+
+        cursor = await self.conn.execute(
+            "SELECT status FROM bio_fetch_queue WHERE sender_id = ?",
+            (sender_id,),
+        )
+        existing = await cursor.fetchone()
+        if not force and existing and existing[0] in ("pending", "running"):
+            await self.conn.commit()
+            return False
+
+        await self.conn.execute(
+            """INSERT INTO bio_fetch_queue
+               (sender_id, priority, reason, status, next_run_at, created_at, updated_at)
+               VALUES (?, ?, ?, 'pending', ?, ?, ?)
+               ON CONFLICT(sender_id) DO UPDATE SET
+                   priority = MAX(bio_fetch_queue.priority, excluded.priority),
+                   reason = excluded.reason,
+                   status = 'pending',
+                   next_run_at = excluded.next_run_at,
+                   updated_at = excluded.updated_at""",
+            (sender_id, priority, reason[:200], now, now, now),
+        )
+        await self.conn.commit()
+        return True
+
+    async def reset_running_bio_tasks(self) -> None:
+        """启动时恢复上次异常退出遗留的 running 任务。"""
+        now = int(time.time())
+        await self.conn.execute(
+            "UPDATE bio_fetch_queue SET status = 'pending', updated_at = ? WHERE status = 'running'",
+            (now,),
+        )
+        await self.conn.commit()
+
+    async def claim_next_bio_fetch_task(self) -> dict | None:
+        """领取下一个到期的 Bio 抓取任务，并标记为 running。"""
+        now = int(time.time())
+        cursor = await self.conn.execute(
+            """SELECT q.sender_id, q.reason, q.retry_count, p.access_hash, p.username,
+                      p.display_name, p.is_ad_candidate
+               FROM bio_fetch_queue q
+               LEFT JOIN sender_profiles p ON p.sender_id = q.sender_id
+               WHERE q.status = 'pending' AND q.next_run_at <= ?
+               ORDER BY q.priority DESC, q.updated_at ASC
+               LIMIT 1""",
+            (now,),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+
+        await self.conn.execute(
+            "UPDATE bio_fetch_queue SET status = 'running', updated_at = ? WHERE sender_id = ?",
+            (now, row[0]),
+        )
+        await self.conn.commit()
+        return {
+            "sender_id": row[0],
+            "reason": row[1],
+            "retry_count": row[2],
+            "access_hash": row[3],
+            "username": row[4],
+            "display_name": row[5],
+            "is_ad_candidate": bool(row[6]),
+        }
+
+    async def complete_bio_fetch(
+        self,
+        sender_id: int,
+        bio_text: str | None,
+        username: str | None = None,
+        display_name: str | None = None,
+        access_hash: int | None = None,
+    ) -> None:
+        """保存 Bio 抓取结果，并根据账号类型设置下一次允许抓取时间。"""
+        now = int(time.time())
+        cursor = await self.conn.execute(
+            "SELECT is_ad_candidate FROM sender_profiles WHERE sender_id = ?",
+            (sender_id,),
+        )
+        row = await cursor.fetchone()
+        is_ad_candidate = bool(row[0]) if row else True
+        cache_days = 7 if is_ad_candidate else 30
+        bio = (bio_text or "").strip()
+        status = "fetched" if bio else "empty"
+        await self.conn.execute(
+            """INSERT INTO sender_profiles
+               (sender_id, access_hash, username, display_name, bio_text, bio_hash,
+                fetched_at, next_fetch_at, fetch_status, last_error, first_seen_at, last_seen_at,
+                is_ad_candidate)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
+               ON CONFLICT(sender_id) DO UPDATE SET
+                   access_hash = COALESCE(excluded.access_hash, sender_profiles.access_hash),
+                   username = COALESCE(excluded.username, sender_profiles.username),
+                   display_name = COALESCE(excluded.display_name, sender_profiles.display_name),
+                   bio_text = excluded.bio_text,
+                   bio_hash = excluded.bio_hash,
+                   fetched_at = excluded.fetched_at,
+                   next_fetch_at = excluded.next_fetch_at,
+                   fetch_status = excluded.fetch_status,
+                   last_error = NULL""",
+            (
+                sender_id,
+                access_hash,
+                username,
+                display_name,
+                bio,
+                self._bio_hash(bio),
+                now,
+                now + cache_days * 86400,
+                status,
+                now,
+                now,
+                1 if is_ad_candidate else 0,
+            ),
+        )
+        await self.conn.execute(
+            "UPDATE bio_fetch_queue SET status = 'done', updated_at = ? WHERE sender_id = ?",
+            (now, sender_id),
+        )
+        await self.conn.commit()
+
+    async def fail_bio_fetch(self, sender_id: int, error: str, retry_after: int | None = None) -> None:
+        """记录 Bio 抓取失败；限流时保留队列任务并推迟执行。"""
+        now = int(time.time())
+        msg = error[:300]
+        if retry_after and retry_after > 0:
+            next_run_at = now + retry_after
+            await self.conn.execute(
+                """UPDATE bio_fetch_queue
+                   SET status = 'pending', retry_count = retry_count + 1,
+                       next_run_at = ?, updated_at = ?
+                   WHERE sender_id = ?""",
+                (next_run_at, now, sender_id),
+            )
+            fetch_status = "rate_limited"
+            next_fetch_at = next_run_at
+        else:
+            await self.conn.execute(
+                "UPDATE bio_fetch_queue SET status = 'failed', retry_count = retry_count + 1, updated_at = ? WHERE sender_id = ?",
+                (now, sender_id),
+            )
+            fetch_status = "failed"
+            next_fetch_at = now + 7 * 86400
+
+        await self.conn.execute(
+            """UPDATE sender_profiles
+               SET fetch_status = ?, last_error = ?, next_fetch_at = ?
+               WHERE sender_id = ?""",
+            (fetch_status, msg, next_fetch_at, sender_id),
+        )
+        await self.conn.commit()
+
+    def _ad_bio_filters(
+        self, query: str = "", group_id: int | None = None, status: str = "all"
+    ) -> tuple[str, list]:
+        """构造广告 Bio 页面复用的 WHERE 子句。"""
+        clauses = ["p.is_ad_candidate = 1"]
+        params: list = []
+        if query:
+            like = f"%{query}%"
+            clauses.append(
+                """(p.username LIKE ? COLLATE NOCASE
+                    OR p.display_name LIKE ? COLLATE NOCASE
+                    OR p.bio_text LIKE ? COLLATE NOCASE
+                    OR p.last_message_text LIKE ? COLLATE NOCASE)"""
+            )
+            params.extend([like, like, like, like])
+        if group_id is not None:
+            clauses.append(
+                "EXISTS (SELECT 1 FROM sender_group_seen s WHERE s.sender_id = p.sender_id AND s.group_id = ?)"
+            )
+            params.append(group_id)
+        if status == "pending":
+            clauses.append("q.status IN ('pending', 'running')")
+        elif status == "fetched":
+            clauses.append("p.fetch_status IN ('fetched', 'empty')")
+        elif status == "failed":
+            clauses.append("(p.fetch_status IN ('failed', 'rate_limited') OR q.status = 'failed')")
+        return " AND ".join(clauses), params
+
+    async def get_ad_bio_entries(
+        self,
+        query: str = "",
+        group_id: int | None = None,
+        status: str = "all",
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict]:
+        """按 sender_id 合并返回广告 Bio 采集页数据。"""
+        where, params = self._ad_bio_filters(query, group_id, status)
+        cursor = await self.conn.execute(
+            f"""SELECT p.sender_id, p.username, p.display_name, p.bio_text, p.fetched_at,
+                      p.fetch_status, p.last_error, p.last_seen_at, p.last_group_name,
+                      p.last_message_id, p.last_message_text, q.status, q.reason,
+                      (SELECT GROUP_CONCAT(group_name, ' / ') FROM (
+                          SELECT group_name
+                          FROM sender_group_seen s
+                          WHERE s.sender_id = p.sender_id
+                          ORDER BY s.last_seen_at DESC
+                          LIMIT 5
+                      )) AS group_names,
+                      (SELECT COUNT(*) FROM sender_group_seen s WHERE s.sender_id = p.sender_id) AS group_count
+               FROM sender_profiles p
+               LEFT JOIN bio_fetch_queue q ON q.sender_id = p.sender_id
+               WHERE {where}
+               ORDER BY COALESCE(p.fetched_at, 0) DESC, p.last_seen_at DESC
+               LIMIT ? OFFSET ?""",
+            [*params, limit, offset],
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "sender_id": r[0],
+                "username": r[1],
+                "display_name": r[2],
+                "bio_text": r[3],
+                "fetched_at": r[4],
+                "fetch_status": r[5],
+                "last_error": r[6],
+                "last_seen_at": r[7],
+                "last_group_name": r[8],
+                "last_message_id": r[9],
+                "last_message_text": r[10],
+                "queue_status": r[11],
+                "queue_reason": r[12],
+                "group_names": r[13] or "",
+                "group_count": r[14] or 0,
+            }
+            for r in rows
+        ]
+
+    async def count_ad_bio_entries(
+        self, query: str = "", group_id: int | None = None, status: str = "all"
+    ) -> int:
+        """返回广告 Bio 采集页筛选后的总数。"""
+        where, params = self._ad_bio_filters(query, group_id, status)
+        cursor = await self.conn.execute(
+            f"""SELECT COUNT(*)
+               FROM sender_profiles p
+               LEFT JOIN bio_fetch_queue q ON q.sender_id = p.sender_id
+               WHERE {where}""",
+            params,
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+
+    async def get_ad_bio_source_groups(self) -> list[dict]:
+        """返回广告候选发送者出现过的群组，用于页面筛选。"""
+        cursor = await self.conn.execute(
+            """SELECT s.group_id, s.group_name, COUNT(DISTINCT s.sender_id) AS sender_count
+               FROM sender_group_seen s
+               JOIN sender_profiles p ON p.sender_id = s.sender_id
+               WHERE p.is_ad_candidate = 1
+               GROUP BY s.group_id, s.group_name
+               ORDER BY sender_count DESC, s.group_name ASC"""
+        )
+        rows = await cursor.fetchall()
+        return [{"group_id": r[0], "group_name": r[1], "sender_count": r[2]} for r in rows]
+
+    async def get_bio_queue_stats(self) -> dict:
+        """返回 Bio 抓取队列状态统计。"""
+        cursor = await self.conn.execute(
+            "SELECT status, COUNT(*) FROM bio_fetch_queue GROUP BY status"
+        )
+        rows = await cursor.fetchall()
+        stats = {r[0]: r[1] for r in rows}
+        return {
+            "pending": stats.get("pending", 0),
+            "running": stats.get("running", 0),
+            "done": stats.get("done", 0),
+            "failed": stats.get("failed", 0),
+        }
 
     # --- context windows ---
 

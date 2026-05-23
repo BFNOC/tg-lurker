@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import html
+import re
 from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from markupsafe import Markup
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from database import Database
@@ -68,6 +71,44 @@ def create_app(config: Config, db: Database, bot=None, scheduler=None) -> FastAP
         """Converts a Unix timestamp to HH:MM string in the configured timezone."""
         return datetime.fromtimestamp(ts, tz).strftime("%H:%M")
 
+    def timestamp_to_datetime(ts):
+        """Converts a Unix timestamp to a compact datetime string in the configured timezone."""
+        if not ts:
+            return "未抓取"
+        return datetime.fromtimestamp(ts, tz).strftime("%m-%d %H:%M")
+
+    def linkify_bio(text):
+        """Escapes Bio text and turns URLs / Telegram usernames into clickable links."""
+        if not text:
+            return ""
+
+        pattern = re.compile(r"(https?://[^\s<]+|t\.me/[A-Za-z0-9_/?=&.%#-]+|@[A-Za-z0-9_]{5,32})")
+        parts: list[str] = []
+        last = 0
+        value = str(text)
+
+        def escape_segment(segment: str) -> str:
+            return html.escape(segment).replace("\n", "<br>")
+
+        for match in pattern.finditer(value):
+            parts.append(escape_segment(value[last:match.start()]))
+            raw = match.group(0)
+            if raw.startswith("@"):
+                href = f"https://t.me/{raw[1:]}"
+            elif raw.startswith("t.me/"):
+                href = f"https://{raw}"
+            else:
+                href = raw
+            parts.append(
+                f'<a href="{html.escape(href, quote=True)}" target="_blank" '
+                f'rel="noopener noreferrer">{html.escape(raw)}</a>'
+            )
+            last = match.end()
+        parts.append(escape_segment(value[last:]))
+        return Markup("".join(parts))
+
     templates.env.filters["timestamp_to_time"] = timestamp_to_time
+    templates.env.filters["timestamp_to_datetime"] = timestamp_to_datetime
+    templates.env.filters["linkify_bio"] = linkify_bio
 
     return app
