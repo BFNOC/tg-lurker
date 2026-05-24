@@ -39,6 +39,9 @@ FREQUENCY_LABELS = {
     "custom": "自定义",
 }
 
+QUICK_URL_DOMAINS = ("t.me", "pay.ldxp.cn")
+_URL_DOMAIN_FILTER_RE = re.compile(r"^[a-z0-9.-]+(?::[0-9]{1,5})?$")
+
 
 def _require_auth(request: Request):
     """Redirects to /login if the request is not authenticated."""
@@ -105,6 +108,45 @@ def _format_biz_period(biz_period: str | None) -> str:
     if biz_period.startswith("manual_"):
         return f"手动 ({biz_period[7:]})"
     return f"{biz_period} 摘要"
+
+
+def _normalize_url_domain_filter(value: str | None) -> str:
+    """Normalizes a URL library domain filter query parameter."""
+    domain = (value or "").strip().lower()
+    if not domain or domain == "all":
+        return "all"
+    if len(domain) > 255 or not _URL_DOMAIN_FILTER_RE.fullmatch(domain):
+        return "all"
+    return domain
+
+
+async def _quick_url_domains(db, query: str, source_type: str, selected_domain: str) -> list[dict]:
+    """Builds pinned and frequently observed domains for the URL library tabs."""
+    top_domains = await db.get_url_domain_counts(query=query, source_type=source_type, limit=10)
+    count_by_domain = {row["domain"]: row["count"] for row in top_domains}
+    fixed_domains = list(QUICK_URL_DOMAINS)
+    if selected_domain != "all" and selected_domain not in fixed_domains:
+        fixed_domains.append(selected_domain)
+    count_by_domain.update(
+        await db.get_url_counts_for_domains(fixed_domains, query=query, source_type=source_type)
+    )
+    quick_domains: list[dict] = []
+    added: set[str] = set()
+
+    def add_domain(domain: str, pinned: bool = False) -> None:
+        if domain in added:
+            return
+        quick_domains.append({"domain": domain, "count": count_by_domain.get(domain, 0), "pinned": pinned})
+        added.add(domain)
+
+    for domain in QUICK_URL_DOMAINS:
+        add_domain(domain, pinned=True)
+    for row in top_domains:
+        add_domain(row["domain"])
+    if selected_domain != "all":
+        add_domain(selected_domain)
+
+    return quick_domains
 
 
 async def _settings_form_values(db, config) -> dict:
@@ -455,6 +497,7 @@ async def urls_page(request: Request):
     source_type = request.query_params.get("source_type", "all")
     if source_type not in ("all", "summary", "bio"):
         source_type = "all"
+    selected_domain = _normalize_url_domain_filter(request.query_params.get("domain", "all"))
     try:
         page = max(1, int(request.query_params.get("page", "1")))
     except ValueError:
@@ -462,19 +505,23 @@ async def urls_page(request: Request):
     per_page = 50
 
     db = request.app.state.db
-    total = await db.count_url_entries(query, source_type)
+    total = await db.count_url_entries(query, source_type, selected_domain)
     entries = await db.get_url_entries(
         query=query,
         source_type=source_type,
+        domain=selected_domain,
         limit=per_page,
         offset=(page - 1) * per_page,
     )
+    quick_domains = await _quick_url_domains(db, query, source_type, selected_domain)
     total_pages = max(1, (total + per_page - 1) // per_page)
 
     return templates.TemplateResponse(request, "urls.html", {
         "entries": entries,
         "q": query,
         "source_type": source_type,
+        "selected_domain": selected_domain,
+        "quick_domains": quick_domains,
         "total": total,
         "page": page,
         "total_pages": total_pages,

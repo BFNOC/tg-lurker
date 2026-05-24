@@ -23,17 +23,38 @@
         <strong>{{ total }}</strong>
     </div>
     <div class="url-source-tabs" aria-label="来源筛选">
-        <a href="/urls?q={{ q|urlencode }}&source_type=all"
-           class="{% if source_type == 'all' %}active{% endif %}">全部</a>
-        <a href="/urls?q={{ q|urlencode }}&source_type=summary"
-           class="{% if source_type == 'summary' %}active{% endif %}">摘要</a>
-        <a href="/urls?q={{ q|urlencode }}&source_type=bio"
-           class="{% if source_type == 'bio' %}active{% endif %}">广告 Bio</a>
+        <a href="/urls?q={{ q|urlencode }}&source_type=all&domain={{ selected_domain|urlencode }}"
+           class="{% if source_type == 'all' %}active{% endif %}"
+           {% if source_type == 'all' %}aria-current="page"{% endif %}>全部</a>
+        <a href="/urls?q={{ q|urlencode }}&source_type=summary&domain={{ selected_domain|urlencode }}"
+           class="{% if source_type == 'summary' %}active{% endif %}"
+           {% if source_type == 'summary' %}aria-current="page"{% endif %}>摘要</a>
+        <a href="/urls?q={{ q|urlencode }}&source_type=bio&domain={{ selected_domain|urlencode }}"
+           class="{% if source_type == 'bio' %}active{% endif %}"
+           {% if source_type == 'bio' %}aria-current="page"{% endif %}>广告 Bio</a>
+    </div>
+</div>
+
+<div class="url-domain-filter animate-fade-in" style="animation-delay: 0.03s;">
+    <div class="url-domain-label">常用域名</div>
+    <div class="url-domain-tabs" aria-label="常用域名筛选">
+        <a href="/urls?q={{ q|urlencode }}&source_type={{ source_type }}&domain=all"
+           class="{% if selected_domain == 'all' %}active{% endif %}"
+           {% if selected_domain == 'all' %}aria-current="page"{% endif %}>全部域名</a>
+        {% for d in quick_domains %}
+        <a href="/urls?q={{ q|urlencode }}&source_type={{ source_type }}&domain={{ d.domain|urlencode }}"
+           class="{% if selected_domain == d.domain %}active{% endif %}"
+           {% if selected_domain == d.domain %}aria-current="page"{% endif %}>
+            <span>{{ d.domain }}</span>
+            <span class="url-domain-count">{{ d.count }}</span>
+        </a>
+        {% endfor %}
     </div>
 </div>
 
 <div class="card animate-fade-in" style="animation-delay: 0.05s;">
     <form method="get" action="/urls" class="url-filter">
+        <input type="hidden" name="domain" value="{{ selected_domain }}">
         <div class="form-group">
             <label for="q">搜索</label>
             <input id="q" name="q" type="search" value="{{ q }}" placeholder="URL、域名、来源或上下文">
@@ -89,11 +110,11 @@
 
     <div class="url-pagination">
         {% if page > 1 %}
-        <a class="btn btn-sm btn-ghost" href="/urls?q={{ q|urlencode }}&source_type={{ source_type }}&page={{ page - 1 }}">上一页</a>
+        <a class="btn btn-sm btn-ghost" href="/urls?q={{ q|urlencode }}&source_type={{ source_type }}&domain={{ selected_domain|urlencode }}&page={{ page - 1 }}">上一页</a>
         {% endif %}
         <span>{{ page }} / {{ total_pages }}</span>
         {% if page < total_pages %}
-        <a class="btn btn-sm btn-ghost" href="/urls?q={{ q|urlencode }}&source_type={{ source_type }}&page={{ page + 1 }}">下一页</a>
+        <a class="btn btn-sm btn-ghost" href="/urls?q={{ q|urlencode }}&source_type={{ source_type }}&domain={{ selected_domain|urlencode }}&page={{ page + 1 }}">下一页</a>
         {% endif %}
     </div>
     {% else %}
@@ -130,17 +151,26 @@
         font-size: 22px;
         color: var(--text);
     }
-    .url-source-tabs {
+    .url-source-tabs,
+    .url-domain-tabs {
         display: flex;
         align-items: center;
         gap: 8px;
         flex-wrap: wrap;
+    }
+    .url-source-tabs {
         justify-content: flex-end;
     }
-    .url-source-tabs a {
-        min-height: 36px;
+    .url-domain-tabs {
+        justify-content: flex-start;
+        min-width: 0;
+    }
+    .url-source-tabs a,
+    .url-domain-tabs a {
+        min-height: 44px;
         display: inline-flex;
         align-items: center;
+        gap: 7px;
         padding: 7px 12px;
         border: 1px solid var(--border);
         border-radius: 8px;
@@ -151,10 +181,46 @@
         background: var(--bg-raised);
     }
     .url-source-tabs a.active,
-    .url-source-tabs a:hover {
+    .url-source-tabs a:hover,
+    .url-domain-tabs a.active,
+    .url-domain-tabs a:hover {
         color: var(--accent);
         border-color: var(--accent);
         background: var(--accent-light);
+    }
+    .url-domain-filter {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 12px;
+        margin-bottom: 16px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--bg-raised);
+    }
+    .url-domain-label {
+        flex-shrink: 0;
+        color: var(--text-muted);
+        font-size: 12px;
+        font-weight: 800;
+    }
+    .url-domain-count {
+        min-width: 22px;
+        height: 20px;
+        padding: 0 6px;
+        border-radius: 100px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--bg);
+        color: var(--text-muted);
+        font-size: 11px;
+        font-weight: 800;
+    }
+    .url-domain-tabs a.active .url-domain-count,
+    .url-domain-tabs a:hover .url-domain-count {
+        color: var(--accent);
+        background: var(--bg-raised);
     }
     .url-filter {
         display: grid;
@@ -247,6 +313,10 @@
         }
         .url-source-tabs {
             justify-content: flex-start;
+        }
+        .url-domain-filter {
+            align-items: flex-start;
+            flex-direction: column;
         }
         .url-filter {
             grid-template-columns: 1fr;

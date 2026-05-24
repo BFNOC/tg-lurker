@@ -106,6 +106,71 @@ def test_url_entry_search_treats_like_wildcards_literally(tmp_path):
     asyncio.run(_with_db(tmp_path, run))
 
 
+def test_url_entries_filter_by_exact_domain(tmp_path):
+    """链接库支持按已规范化的 domain 精确过滤。"""
+    async def run(db: Database):
+        await db.insert_summary(
+            "2026-05-24",
+            -100,
+            "测试群",
+            1,
+            "入口 t.me/shop01 支付 https://pay.ldxp.cn/order 其他 https://example.test/a",
+        )
+
+        tme_rows = await db.get_url_entries(domain="t.me")
+        pay_rows = await db.get_url_entries(domain="pay.ldxp.cn")
+
+        assert [row["url"] for row in tme_rows] == ["https://t.me/shop01"]
+        assert [row["url"] for row in pay_rows] == ["https://pay.ldxp.cn/order"]
+        assert await db.count_url_entries(domain="t.me") == 1
+        assert await db.count_url_entries(domain="ldxp.cn") == 0
+
+    asyncio.run(_with_db(tmp_path, run))
+
+
+def test_url_domain_counts_use_current_filters(tmp_path):
+    """常用域名计数按当前搜索和来源过滤聚合。"""
+    async def run(db: Database):
+        await db.sync_url_entries_for_source(
+            "summary",
+            1,
+            "A https://t.me/shop-a https://pay.ldxp.cn/order",
+            commit=False,
+        )
+        await db.sync_url_entries_for_source(
+            "summary",
+            2,
+            "B https://t.me/shop-b",
+            commit=False,
+        )
+        await db.sync_url_entries_for_source(
+            "bio",
+            1001,
+            "C https://example.test/bio",
+            commit=False,
+        )
+        await db.conn.commit()
+
+        counts = await db.get_url_domain_counts()
+        summary_counts = await db.get_url_domain_counts(source_type="summary")
+        example_counts = await db.get_url_domain_counts(query="example.test")
+        fixed_counts = await db.get_url_counts_for_domains(["t.me", "missing.test"], source_type="summary")
+
+        assert counts[:3] == [
+            {"domain": "t.me", "count": 2},
+            {"domain": "example.test", "count": 1},
+            {"domain": "pay.ldxp.cn", "count": 1},
+        ]
+        assert summary_counts == [
+            {"domain": "t.me", "count": 2},
+            {"domain": "pay.ldxp.cn", "count": 1},
+        ]
+        assert example_counts == [{"domain": "example.test", "count": 1}]
+        assert fixed_counts == {"t.me": 2}
+
+    asyncio.run(_with_db(tmp_path, run))
+
+
 def test_sync_url_entries_for_source_is_idempotent(tmp_path):
     """同一来源重复同步时，链接库保持一条当前记录。"""
     async def run(db: Database):
@@ -177,3 +242,46 @@ def test_urls_page_renders_blank_links(tmp_path):
     assert "https://example.test/item" in response.text
     assert 'target="_blank"' in response.text
     assert 'rel="noopener noreferrer"' in response.text
+
+
+def test_urls_page_filters_by_domain_and_preserves_domain_links(tmp_path):
+    """链接库页面可按快捷域名过滤，并在分页和表单中保留域名参数。"""
+    db_path = str(tmp_path / "messages.db")
+    db = Database(db_path)
+    asyncio.run(db.connect())
+    try:
+        async def seed():
+            for idx in range(55):
+                await db.sync_url_entries_for_source(
+                    "summary",
+                    idx + 1,
+                    f"入口 https://t.me/shop{idx}",
+                    source_label="测试群",
+                    group_name="测试群",
+                    commit=False,
+                )
+            await db.sync_url_entries_for_source(
+                "summary",
+                1000,
+                "支付 https://pay.ldxp.cn/order",
+                source_label="支付群",
+                group_name="支付群",
+                commit=False,
+            )
+            await db.conn.commit()
+
+        asyncio.run(seed())
+        app = create_app(_make_config(db_path), db)
+        with TestClient(app) as client:
+            assert client.post("/login", data={"password": "secret"}, follow_redirects=False).status_code == 303
+            response = client.get("/urls?domain=t.me")
+    finally:
+        asyncio.run(db.close())
+
+    assert response.status_code == 200
+    assert "https://t.me/shop" in response.text
+    assert "https://pay.ldxp.cn/order" not in response.text
+    assert "常用域名" in response.text
+    assert "pay.ldxp.cn" in response.text
+    assert 'name="domain" value="t.me"' in response.text
+    assert "domain=t.me&page=2" in response.text

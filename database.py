@@ -1305,7 +1305,10 @@ class Database:
         return total
 
     def _url_entries_filters(
-        self, query: str = "", source_type: str = "all"
+        self,
+        query: str = "",
+        source_type: str = "all",
+        domain: str = "all",
     ) -> tuple[str, list]:
         """Builds WHERE conditions for the URL library page."""
         clauses: list[str] = []
@@ -1313,6 +1316,9 @@ class Database:
         if source_type in ("summary", "bio"):
             clauses.append("source_type = ?")
             params.append(source_type)
+        if domain and domain != "all":
+            clauses.append("domain = ?")
+            params.append(domain)
         if query:
             escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             like = f"%{escaped}%"
@@ -1333,9 +1339,10 @@ class Database:
         source_type: str = "all",
         limit: int = 50,
         offset: int = 0,
+        domain: str = "all",
     ) -> list[dict]:
         """Returns collected URL entries ordered by newest first."""
-        where, params = self._url_entries_filters(query, source_type)
+        where, params = self._url_entries_filters(query, source_type, domain)
         cursor = await self.conn.execute(
             f"""SELECT id, url, domain, source_type, source_id, source_label,
                       source_context, biz_date, group_id, group_name, sender_id,
@@ -1366,15 +1373,63 @@ class Database:
             for r in rows
         ]
 
-    async def count_url_entries(self, query: str = "", source_type: str = "all") -> int:
+    async def count_url_entries(
+        self,
+        query: str = "",
+        source_type: str = "all",
+        domain: str = "all",
+    ) -> int:
         """Returns total URL entry count for the given filters."""
-        where, params = self._url_entries_filters(query, source_type)
+        where, params = self._url_entries_filters(query, source_type, domain)
         cursor = await self.conn.execute(
             f"SELECT COUNT(*) FROM url_entries{where}",
             params,
         )
         row = await cursor.fetchone()
         return row[0] if row else 0
+
+    async def get_url_domain_counts(
+        self,
+        query: str = "",
+        source_type: str = "all",
+        limit: int = 12,
+    ) -> list[dict]:
+        """Returns the most common URL domains for the current non-domain filters."""
+        where, params = self._url_entries_filters(query, source_type)
+        cursor = await self.conn.execute(
+            f"""SELECT domain, COUNT(*) AS entry_count
+               FROM url_entries
+               {where}
+               GROUP BY domain
+               ORDER BY entry_count DESC, domain ASC
+               LIMIT ?""",
+            [*params, limit],
+        )
+        rows = await cursor.fetchall()
+        return [{"domain": r[0], "count": r[1]} for r in rows]
+
+    async def get_url_counts_for_domains(
+        self,
+        domains: list[str],
+        query: str = "",
+        source_type: str = "all",
+    ) -> dict[str, int]:
+        """Returns counts for specific domains under the current non-domain filters."""
+        if not domains:
+            return {}
+        where, params = self._url_entries_filters(query, source_type)
+        placeholders = ", ".join("?" for _ in domains)
+        domain_clause = f"domain IN ({placeholders})"
+        where = f"{where} AND {domain_clause}" if where else f" WHERE {domain_clause}"
+        cursor = await self.conn.execute(
+            f"""SELECT domain, COUNT(*) AS entry_count
+               FROM url_entries
+               {where}
+               GROUP BY domain""",
+            [*params, *domains],
+        )
+        rows = await cursor.fetchall()
+        return {r[0]: r[1] for r in rows}
 
     # --- blocked_senders ---
 
