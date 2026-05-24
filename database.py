@@ -2,16 +2,26 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import sqlite3
 import time
 from collections import Counter
 from datetime import datetime
+from urllib.parse import urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
 import aiosqlite
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+_URL_PATTERN = re.compile(
+    r"https?://[^\s<>'\"]+|(?<![\w.])t\.me/[A-Za-z0-9_/?=&.%#-]+|(?<![\w.])@[A-Za-z0-9_]{5,32}",
+    re.IGNORECASE,
+)
+_URL_TRAILING_PUNCTUATION = ".,!?;:)]}，。！？；：）】》、"
+_URL_MAX_TEXT_LENGTH = 20000
+_URL_CONTEXT_RADIUS = 120
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS messages (
@@ -134,6 +144,24 @@ CREATE TABLE IF NOT EXISTS bio_fetch_queue (
     updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
 );
 
+CREATE TABLE IF NOT EXISTS url_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    url TEXT NOT NULL,
+    domain TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    source_id INTEGER NOT NULL,
+    source_label TEXT,
+    source_context TEXT,
+    biz_date TEXT,
+    group_id INTEGER,
+    group_name TEXT,
+    sender_id INTEGER,
+    sender_name TEXT,
+    created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+    updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+    UNIQUE(url, source_type, source_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_messages_biz_date ON messages(biz_date);
 CREATE INDEX IF NOT EXISTS idx_messages_group_date ON messages(group_id, biz_date);
 CREATE INDEX IF NOT EXISTS idx_messages_group_msgid ON messages(group_id, message_id);
@@ -147,6 +175,22 @@ CREATE INDEX IF NOT EXISTS idx_sender_profiles_candidate ON sender_profiles(is_a
 CREATE INDEX IF NOT EXISTS idx_sender_profiles_fetch ON sender_profiles(fetch_status, next_fetch_at);
 CREATE INDEX IF NOT EXISTS idx_sender_group_seen_group ON sender_group_seen(group_id, last_seen_at);
 CREATE INDEX IF NOT EXISTS idx_bio_fetch_queue_next ON bio_fetch_queue(status, next_run_at, priority);
+CREATE INDEX IF NOT EXISTS idx_url_entries_created ON url_entries(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_url_entries_source ON url_entries(source_type, source_id);
+CREATE INDEX IF NOT EXISTS idx_url_entries_domain ON url_entries(domain);
+CREATE INDEX IF NOT EXISTS idx_url_entries_url ON url_entries(url);
+
+CREATE TRIGGER IF NOT EXISTS trg_url_entries_summary_delete
+AFTER DELETE ON summaries
+BEGIN
+    DELETE FROM url_entries WHERE source_type = 'summary' AND source_id = OLD.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_url_entries_sender_delete
+AFTER DELETE ON sender_profiles
+BEGIN
+    DELETE FROM url_entries WHERE source_type = 'bio' AND source_id = OLD.sender_id;
+END;
 
 CREATE TABLE IF NOT EXISTS summary_favorites (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -220,6 +264,8 @@ class Database:
             "ALTER TABLE context_windows ADD COLUMN covered_refs TEXT",
         )
         await self._migrate_favorites()
+        await self._migrate_url_entries()
+        await self._backfill_url_entries_once()
         await self.conn.commit()
 
     async def _migrate_favorites(self) -> None:
@@ -242,6 +288,72 @@ class Database:
         await self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_summary_favorites_created ON summary_favorites(created_at)"
         )
+
+    async def _migrate_url_entries(self) -> None:
+        """Creates the collected URL table and indexes if they don't exist."""
+        await self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS url_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                url TEXT NOT NULL,
+                domain TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                source_id INTEGER NOT NULL,
+                source_label TEXT,
+                source_context TEXT,
+                biz_date TEXT,
+                group_id INTEGER,
+                group_name TEXT,
+                sender_id INTEGER,
+                sender_name TEXT,
+                created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+                updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+                UNIQUE(url, source_type, source_id)
+            )"""
+        )
+        await self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_url_entries_created ON url_entries(created_at DESC)"
+        )
+        await self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_url_entries_source ON url_entries(source_type, source_id)"
+        )
+        await self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_url_entries_domain ON url_entries(domain)"
+        )
+        await self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_url_entries_url ON url_entries(url)"
+        )
+        await self.conn.execute(
+            """CREATE TRIGGER IF NOT EXISTS trg_url_entries_summary_delete
+               AFTER DELETE ON summaries
+               BEGIN
+                   DELETE FROM url_entries WHERE source_type = 'summary' AND source_id = OLD.id;
+               END"""
+        )
+        await self.conn.execute(
+            """CREATE TRIGGER IF NOT EXISTS trg_url_entries_sender_delete
+               AFTER DELETE ON sender_profiles
+               BEGIN
+                   DELETE FROM url_entries WHERE source_type = 'bio' AND source_id = OLD.sender_id;
+               END"""
+        )
+
+    async def _backfill_url_entries_once(self) -> None:
+        """Backfills URLs from existing summaries and Bio rows once per database."""
+        flag = await self.get_setting("url_entries_backfilled", "")
+        if flag == "1":
+            return
+        await self.conn.execute("SAVEPOINT url_entries_backfill")
+        try:
+            count = await self.backfill_url_entries(commit=False)
+            await self.conn.execute("RELEASE SAVEPOINT url_entries_backfill")
+        except Exception:
+            await self.conn.execute("ROLLBACK TO SAVEPOINT url_entries_backfill")
+            await self.conn.execute("RELEASE SAVEPOINT url_entries_backfill")
+            logger.exception("Failed to backfill URL entries; startup will continue")
+            return
+        await self.set_setting("url_entries_backfilled", "1")
+        if count:
+            logger.info("Backfilled %s URL entries", count)
 
     async def _ensure_column(self, table: str, column: str, ddl: str) -> None:
         """Adds column to table if it doesn't already exist."""
@@ -547,8 +659,19 @@ class Database:
                    VALUES (?, ?, ?, ?, ?, ?)""",
                 (biz_date, biz_period, group_id, group_name, message_count, summary_text),
             )
+            summary_id = cursor.lastrowid
+            await self.sync_url_entries_for_source(
+                "summary",
+                summary_id,
+                summary_text,
+                source_label=group_name,
+                biz_date=biz_date,
+                group_id=group_id,
+                group_name=group_name,
+                commit=False,
+            )
             await self.conn.commit()
-            return cursor.lastrowid
+            return summary_id
         except sqlite3.IntegrityError as e:
             if "UNIQUE constraint failed" in str(e):
                 await self.conn.rollback()
@@ -559,6 +682,9 @@ class Database:
                     biz_period,
                 )
                 return None
+            raise
+        except Exception:
+            await self.conn.rollback()
             raise
 
     async def summary_exists(self, biz_date: str, group_id: int, biz_period: str) -> bool:
@@ -1009,6 +1135,247 @@ class Database:
         )
         await self.conn.commit()
 
+    # --- url entries ---
+
+    @staticmethod
+    def _url_context(text: str, start: int, end: int) -> str:
+        """Returns a compact text fragment around a matched URL."""
+        left = max(0, start - _URL_CONTEXT_RADIUS)
+        right = min(len(text), end + _URL_CONTEXT_RADIUS)
+        context = text[left:right].strip()
+        if left > 0:
+            context = "..." + context
+        if right < len(text):
+            context = context + "..."
+        return context[:500]
+
+    @staticmethod
+    def _normalize_url(raw: str) -> tuple[str, str] | None:
+        """Normalizes supported URL forms into clickable http(s) URLs and returns (url, domain)."""
+        value = raw.strip().rstrip(_URL_TRAILING_PUNCTUATION)
+        if not value:
+            return None
+        lower = value.lower()
+        if value.startswith("@"):
+            value = f"https://t.me/{value[1:]}"
+        elif lower.startswith("t.me/"):
+            value = f"https://{value}"
+
+        try:
+            parsed = urlsplit(value)
+            if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc:
+                return None
+            domain = parsed.netloc.lower()
+            if not domain:
+                return None
+            normalized = urlunsplit((
+                parsed.scheme.lower(),
+                domain,
+                parsed.path,
+                parsed.query,
+                parsed.fragment,
+            ))
+        except ValueError:
+            return None
+        return normalized, domain
+
+    @classmethod
+    def extract_urls(cls, text: str | None) -> list[dict]:
+        """Extracts supported URLs from text, preserving first-seen order and context."""
+        if not text:
+            return []
+        value = str(text)[:_URL_MAX_TEXT_LENGTH]
+        entries: list[dict] = []
+        seen: set[str] = set()
+        for match in _URL_PATTERN.finditer(value):
+            raw = match.group(0)
+            normalized = cls._normalize_url(raw)
+            if normalized is None:
+                continue
+            url, domain = normalized
+            if url in seen:
+                continue
+            seen.add(url)
+            entries.append({
+                "url": url,
+                "domain": domain,
+                "raw_url": raw.strip().rstrip(_URL_TRAILING_PUNCTUATION),
+                "source_context": cls._url_context(value, match.start(), match.end()),
+            })
+        return entries
+
+    async def sync_url_entries_for_source(
+        self,
+        source_type: str,
+        source_id: int,
+        text: str | None,
+        source_label: str | None = None,
+        biz_date: str | None = None,
+        group_id: int | None = None,
+        group_name: str | None = None,
+        sender_id: int | None = None,
+        sender_name: str | None = None,
+        created_at: int | None = None,
+        commit: bool = True,
+    ) -> int:
+        """Replaces URL entries for one source and returns the number of extracted URLs."""
+        if source_type not in ("summary", "bio"):
+            raise ValueError(f"Unsupported URL source_type: {source_type}")
+
+        await self.conn.execute(
+            "DELETE FROM url_entries WHERE source_type = ? AND source_id = ?",
+            (source_type, source_id),
+        )
+        entries = self.extract_urls(text)
+        if entries:
+            now = int(time.time())
+            row_created_at = created_at or now
+            await self.conn.executemany(
+                """INSERT OR IGNORE INTO url_entries
+                   (url, domain, source_type, source_id, source_label, source_context,
+                    biz_date, group_id, group_name, sender_id, sender_name, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                [
+                    (
+                        entry["url"],
+                        entry["domain"],
+                        source_type,
+                        source_id,
+                        source_label,
+                        entry["source_context"],
+                        biz_date,
+                        group_id,
+                        group_name,
+                        sender_id,
+                        sender_name,
+                        row_created_at,
+                        now,
+                    )
+                    for entry in entries
+                ],
+            )
+        if commit:
+            await self.conn.commit()
+        return len(entries)
+
+    async def backfill_url_entries(self, commit: bool = True) -> int:
+        """Backfills URL entries from historical summaries and fetched Bio rows."""
+        total = 0
+        cursor = await self.conn.execute(
+            """SELECT id, biz_date, group_id, group_name, summary_text, created_at
+               FROM summaries
+               ORDER BY id ASC"""
+        )
+        for row in await cursor.fetchall():
+            total += await self.sync_url_entries_for_source(
+                "summary",
+                row[0],
+                row[4],
+                source_label=row[3],
+                biz_date=row[1],
+                group_id=row[2],
+                group_name=row[3],
+                created_at=row[5],
+                commit=False,
+            )
+
+        cursor = await self.conn.execute(
+            """SELECT sender_id, username, display_name, bio_text, fetched_at,
+                      last_group_id, last_group_name
+               FROM sender_profiles
+               WHERE bio_text IS NOT NULL AND TRIM(bio_text) != ''
+               ORDER BY sender_id ASC"""
+        )
+        for row in await cursor.fetchall():
+            label = row[2] or (f"@{row[1]}" if row[1] else str(row[0]))
+            total += await self.sync_url_entries_for_source(
+                "bio",
+                row[0],
+                row[3],
+                source_label=label,
+                group_id=row[5],
+                group_name=row[6],
+                sender_id=row[0],
+                sender_name=label,
+                created_at=row[4],
+                commit=False,
+            )
+        if commit:
+            await self.conn.commit()
+        return total
+
+    def _url_entries_filters(
+        self, query: str = "", source_type: str = "all"
+    ) -> tuple[str, list]:
+        """Builds WHERE conditions for the URL library page."""
+        clauses: list[str] = []
+        params: list = []
+        if source_type in ("summary", "bio"):
+            clauses.append("source_type = ?")
+            params.append(source_type)
+        if query:
+            escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            like = f"%{escaped}%"
+            clauses.append(
+                """(url LIKE ? ESCAPE '\\'
+                    OR domain LIKE ? ESCAPE '\\'
+                    OR source_label LIKE ? ESCAPE '\\'
+                    OR source_context LIKE ? ESCAPE '\\'
+                    OR group_name LIKE ? ESCAPE '\\'
+                    OR sender_name LIKE ? ESCAPE '\\')"""
+            )
+            params.extend([like, like, like, like, like, like])
+        return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
+
+    async def get_url_entries(
+        self,
+        query: str = "",
+        source_type: str = "all",
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict]:
+        """Returns collected URL entries ordered by newest first."""
+        where, params = self._url_entries_filters(query, source_type)
+        cursor = await self.conn.execute(
+            f"""SELECT id, url, domain, source_type, source_id, source_label,
+                      source_context, biz_date, group_id, group_name, sender_id,
+                      sender_name, created_at
+               FROM url_entries
+               {where}
+               ORDER BY created_at DESC, id DESC
+               LIMIT ? OFFSET ?""",
+            [*params, limit, offset],
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "id": r[0],
+                "url": r[1],
+                "domain": r[2],
+                "source_type": r[3],
+                "source_id": r[4],
+                "source_label": r[5],
+                "source_context": r[6],
+                "biz_date": r[7],
+                "group_id": r[8],
+                "group_name": r[9],
+                "sender_id": r[10],
+                "sender_name": r[11],
+                "created_at": r[12],
+            }
+            for r in rows
+        ]
+
+    async def count_url_entries(self, query: str = "", source_type: str = "all") -> int:
+        """Returns total URL entry count for the given filters."""
+        where, params = self._url_entries_filters(query, source_type)
+        cursor = await self.conn.execute(
+            f"SELECT COUNT(*) FROM url_entries{where}",
+            params,
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+
     # --- blocked_senders ---
 
     async def block_sender(self, sender_id: int, sender_name: str | None = None, reason: str = "ad") -> None:
@@ -1264,14 +1631,22 @@ class Database:
         """保存 Bio 抓取结果，并根据账号类型设置下一次允许抓取时间。"""
         now = int(time.time())
         cursor = await self.conn.execute(
-            "SELECT is_ad_candidate FROM sender_profiles WHERE sender_id = ?",
+            """SELECT is_ad_candidate, username, display_name, last_group_id, last_group_name
+               FROM sender_profiles WHERE sender_id = ?""",
             (sender_id,),
         )
         row = await cursor.fetchone()
         is_ad_candidate = bool(row[0]) if row else True
+        existing_username = row[1] if row else None
+        existing_display_name = row[2] if row else None
+        source_group_id = row[3] if row else None
+        source_group_name = row[4] if row else None
+        resolved_username = username or existing_username
+        resolved_display_name = display_name or existing_display_name
         cache_days = 7 if is_ad_candidate else 30
         bio = (bio_text or "").strip()
         status = "fetched" if bio else "empty"
+        source_label = resolved_display_name or (f"@{resolved_username}" if resolved_username else str(sender_id))
         await self.conn.execute(
             """INSERT INTO sender_profiles
                (sender_id, access_hash, username, display_name, bio_text, bio_hash,
@@ -1306,6 +1681,18 @@ class Database:
         await self.conn.execute(
             "UPDATE bio_fetch_queue SET status = 'done', updated_at = ? WHERE sender_id = ?",
             (now, sender_id),
+        )
+        await self.sync_url_entries_for_source(
+            "bio",
+            sender_id,
+            bio,
+            source_label=source_label,
+            group_id=source_group_id,
+            group_name=source_group_name,
+            sender_id=sender_id,
+            sender_name=source_label,
+            created_at=now,
+            commit=False,
         )
         await self.conn.commit()
 

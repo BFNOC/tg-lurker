@@ -1,0 +1,263 @@
+{% extends "base.html" %}
+{% block title_suffix %} - 链接库{% endblock %}
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1>链接库</h1>
+        <p>统一查看摘要和广告 Bio 中收集到的 URL</p>
+    </div>
+</div>
+
+<div class="sub-tabs" style="display:flex;gap:8px;margin-bottom:24px;">
+    <a href="/summaries" class="btn btn-ghost btn-sm">摘要</a>
+    <a href="/favorites" class="btn btn-ghost btn-sm">收藏</a>
+    <a href="/urls" class="btn btn-sm" style="background:var(--accent);color:#fff;">
+        <svg style="width:12px;height:12px;" aria-hidden="true"><use href="#icon-link"></use></svg>
+        链接库
+    </a>
+</div>
+
+<div class="url-stats animate-fade-in">
+    <div class="url-stat">
+        <span>当前结果</span>
+        <strong>{{ total }}</strong>
+    </div>
+    <div class="url-source-tabs" aria-label="来源筛选">
+        <a href="/urls?q={{ q|urlencode }}&source_type=all"
+           class="{% if source_type == 'all' %}active{% endif %}">全部</a>
+        <a href="/urls?q={{ q|urlencode }}&source_type=summary"
+           class="{% if source_type == 'summary' %}active{% endif %}">摘要</a>
+        <a href="/urls?q={{ q|urlencode }}&source_type=bio"
+           class="{% if source_type == 'bio' %}active{% endif %}">广告 Bio</a>
+    </div>
+</div>
+
+<div class="card animate-fade-in" style="animation-delay: 0.05s;">
+    <form method="get" action="/urls" class="url-filter">
+        <div class="form-group">
+            <label for="q">搜索</label>
+            <input id="q" name="q" type="search" value="{{ q }}" placeholder="URL、域名、来源或上下文">
+        </div>
+        <div class="form-group">
+            <label for="source_type">来源</label>
+            <select id="source_type" name="source_type">
+                <option value="all" {% if source_type == "all" %}selected{% endif %}>全部</option>
+                <option value="summary" {% if source_type == "summary" %}selected{% endif %}>摘要</option>
+                <option value="bio" {% if source_type == "bio" %}selected{% endif %}>广告 Bio</option>
+            </select>
+        </div>
+        <button type="submit" class="btn">筛选</button>
+    </form>
+</div>
+
+<div class="card animate-fade-in" style="animation-delay: 0.1s;">
+    {% if entries %}
+    <div class="url-list">
+        {% for e in entries %}
+        <article class="url-row">
+            <div class="url-main">
+                <div class="url-line">
+                    <a class="url-link" href="{{ e.url }}" target="_blank" rel="noopener noreferrer">{{ e.url }}</a>
+                </div>
+                <div class="url-meta">
+                    <span class="url-badge url-badge-{{ e.source_type }}">
+                        {% if e.source_type == "summary" %}摘要{% else %}广告 Bio{% endif %}
+                    </span>
+                    <span>{{ e.domain }}</span>
+                    {% if e.group_name %}
+                    <span>{{ e.group_name }}</span>
+                    {% endif %}
+                    {% if e.sender_name %}
+                    <span>{{ e.sender_name }}</span>
+                    {% endif %}
+                    <span>{{ e.created_at | timestamp_to_datetime }}</span>
+                </div>
+                {% if e.source_context %}
+                <div class="url-context">{{ e.source_context }}</div>
+                {% endif %}
+            </div>
+            <div class="url-actions">
+                {% if e.source_type == "summary" and e.biz_date %}
+                <a class="btn btn-sm btn-ghost" href="/summaries?date={{ e.biz_date }}">看摘要</a>
+                {% elif e.source_type == "bio" %}
+                <a class="btn btn-sm btn-ghost" href="/ad-bios?q={{ (e.sender_name or e.source_label or e.sender_id)|urlencode }}">看 Bio</a>
+                {% endif %}
+            </div>
+        </article>
+        {% endfor %}
+    </div>
+
+    <div class="url-pagination">
+        {% if page > 1 %}
+        <a class="btn btn-sm btn-ghost" href="/urls?q={{ q|urlencode }}&source_type={{ source_type }}&page={{ page - 1 }}">上一页</a>
+        {% endif %}
+        <span>{{ page }} / {{ total_pages }}</span>
+        {% if page < total_pages %}
+        <a class="btn btn-sm btn-ghost" href="/urls?q={{ q|urlencode }}&source_type={{ source_type }}&page={{ page + 1 }}">下一页</a>
+        {% endif %}
+    </div>
+    {% else %}
+    <div class="empty-state">
+        <svg aria-hidden="true" role="img"><use href="#icon-link"></use></svg>
+        <h3>暂无链接</h3>
+        <p>生成摘要或抓取广告 Bio 后，出现的 URL 会自动汇总到这里。</p>
+    </div>
+    {% endif %}
+</div>
+
+<style>
+    .url-stats {
+        display: flex;
+        justify-content: space-between;
+        align-items: stretch;
+        gap: 12px;
+        margin-bottom: 16px;
+    }
+    .url-stat {
+        min-width: 160px;
+        padding: 14px 16px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--bg-raised);
+    }
+    .url-stat span {
+        display: block;
+        font-size: 12px;
+        color: var(--text-muted);
+        margin-bottom: 4px;
+    }
+    .url-stat strong {
+        font-size: 22px;
+        color: var(--text);
+    }
+    .url-source-tabs {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+    }
+    .url-source-tabs a {
+        min-height: 36px;
+        display: inline-flex;
+        align-items: center;
+        padding: 7px 12px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        color: var(--text-secondary);
+        text-decoration: none;
+        font-size: 13px;
+        font-weight: 700;
+        background: var(--bg-raised);
+    }
+    .url-source-tabs a.active,
+    .url-source-tabs a:hover {
+        color: var(--accent);
+        border-color: var(--accent);
+        background: var(--accent-light);
+    }
+    .url-filter {
+        display: grid;
+        grid-template-columns: minmax(220px, 1fr) minmax(140px, 180px) auto;
+        gap: 12px;
+        align-items: end;
+    }
+    .url-filter .form-group { margin-bottom: 0; }
+    .url-list {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+    }
+    .url-row {
+        display: flex;
+        gap: 16px;
+        padding: 14px 0;
+        border-bottom: 1px solid var(--border);
+    }
+    .url-row:last-child { border-bottom: none; }
+    .url-main { flex: 1; min-width: 0; }
+    .url-line {
+        display: flex;
+        align-items: center;
+        margin-bottom: 6px;
+    }
+    .url-link {
+        color: var(--accent);
+        font-weight: 700;
+        text-decoration: none;
+        word-break: break-word;
+        overflow-wrap: anywhere;
+        line-height: 1.45;
+    }
+    .url-link:hover { text-decoration: underline; }
+    .url-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        font-size: 12px;
+        color: var(--text-muted);
+        margin-bottom: 8px;
+    }
+    .url-badge {
+        color: var(--text);
+        font-size: 11px;
+        font-weight: 800;
+        padding: 2px 7px;
+        border-radius: 100px;
+    }
+    .url-badge-summary {
+        color: var(--success);
+        background: var(--success-bg);
+    }
+    .url-badge-bio {
+        color: var(--warning);
+        background: var(--warning-bg);
+    }
+    .url-context {
+        padding: 10px;
+        border-radius: 6px;
+        background: var(--bg);
+        color: var(--text-secondary);
+        font-size: 13px;
+        line-height: 1.6;
+        word-break: break-word;
+    }
+    .url-actions {
+        width: 92px;
+        flex-shrink: 0;
+        display: flex;
+        justify-content: flex-end;
+        align-items: flex-start;
+    }
+    .url-pagination {
+        margin-top: 16px;
+        padding-top: 12px;
+        border-top: 1px solid var(--border);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        gap: 10px;
+        color: var(--text-muted);
+        font-size: 13px;
+    }
+    @media (max-width: 760px) {
+        .url-stats {
+            flex-direction: column;
+        }
+        .url-source-tabs {
+            justify-content: flex-start;
+        }
+        .url-filter {
+            grid-template-columns: 1fr;
+        }
+        .url-row {
+            flex-direction: column;
+        }
+        .url-actions {
+            width: auto;
+            justify-content: flex-start;
+        }
+    }
+</style>
+{% endblock %}

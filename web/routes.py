@@ -444,6 +444,43 @@ async def queue_ad_bio(request: Request):
     return HTMLResponse("<span style='color:var(--text-muted);font-size:12px;font-weight:700;'>缓存有效或已在队列</span>")
 
 
+@router.get("/urls")
+async def urls_page(request: Request):
+    """Renders the unified collected URL library."""
+    redirect = _require_auth(request)
+    if redirect:
+        return redirect
+
+    query = request.query_params.get("q", "").strip()
+    source_type = request.query_params.get("source_type", "all")
+    if source_type not in ("all", "summary", "bio"):
+        source_type = "all"
+    try:
+        page = max(1, int(request.query_params.get("page", "1")))
+    except ValueError:
+        page = 1
+    per_page = 50
+
+    db = request.app.state.db
+    total = await db.count_url_entries(query, source_type)
+    entries = await db.get_url_entries(
+        query=query,
+        source_type=source_type,
+        limit=per_page,
+        offset=(page - 1) * per_page,
+    )
+    total_pages = max(1, (total + per_page - 1) // per_page)
+
+    return templates.TemplateResponse(request, "urls.html", {
+        "entries": entries,
+        "q": query,
+        "source_type": source_type,
+        "total": total,
+        "page": page,
+        "total_pages": total_pages,
+    })
+
+
 @router.get("/dashboard")
 async def dashboard(request: Request):
     """Renders the main dashboard with today's stats and group overview."""

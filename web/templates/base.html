@@ -738,6 +738,7 @@
         <symbol id="icon-star-filled" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></symbol>
         <symbol id="icon-heart" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></symbol>
         <symbol id="icon-heart-filled" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></symbol>
+        <symbol id="icon-link" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.07 0l3.54-3.54a5 5 0 0 0-7.07-7.07L11.5 4.43"/><path d="M14 11a5 5 0 0 0-7.07 0L3.39 14.54a5 5 0 0 0 7.07 7.07l2.04-2.04"/></symbol>
     </svg>
 
     {% block nav %}
@@ -751,6 +752,7 @@
             <a href="/groups" {% if request.url.path == '/groups' %}class="active"{% endif %}>群组</a>
             <a href="/messages" {% if request.url.path == '/messages' %}class="active"{% endif %}>消息</a>
             <a href="/ad-bios" {% if request.url.path == '/ad-bios' %}class="active"{% endif %}>广告Bio</a>
+            <a href="/urls" {% if request.url.path == '/urls' %}class="active"{% endif %}>链接库</a>
             <a href="/alerts" {% if request.url.path == '/alerts' %}class="active"{% endif %}>告警</a>
             <a href="/summaries" {% if request.url.path == '/summaries' %}class="active"{% endif %}>摘要</a>
             <a href="/favorites" {% if request.url.path == '/favorites' %}class="active"{% endif %}>收藏</a>

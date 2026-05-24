@@ -40,6 +40,8 @@ web/
 | POST | `/groups/{id}/toggle` | 启用/禁用群组 |
 | GET | `/summaries` | 摘要列表 |
 | GET | `/messages` | 消息浏览 |
+| GET | `/ad-bios` | 广告 Bio 采集页 |
+| GET | `/urls` | 摘要和广告 Bio URL 链接库 |
 | POST | `/messages/block-sender` | 拉黑发送者 |
 | GET | `/settings` | 设置页 |
 | POST | `/settings` | 保存设置 |
