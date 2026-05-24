@@ -860,14 +860,13 @@ async def _favorite_card_html_inner(
     biz_date: str, group_id: int, biz_period: str
 ) -> HTMLResponse:
     """Core implementation of favorite card HTML generation."""
-    summary = await db.get_summary_with_context(summary_id)
+    summary = await db.get_summary(summary_id)
     if not summary:
         return _favorite_button_html(summary_id, is_favorite)
     fav = await db.get_favorite_by_natural_key(biz_date, group_id, biz_period) if is_favorite else None
     custom_text = fav["custom_text"] if fav else None
     period_label = _format_biz_period(summary.get("biz_period", "daily"))
 
-    group_name = summary["group_name"]
     message_count = summary["message_count"]
     summary_text = summary["summary_text"]
 
@@ -882,20 +881,34 @@ async def _favorite_card_html_inner(
     btn_label = "已收藏" if is_favorite else "收藏"
     btn_class = " active" if is_favorite else ""
     aria_label = "取消收藏" if is_favorite else "添加收藏"
-    windows_json = html_escape(_json.dumps(summary.get("windows", [])))
+    context_windows = await db.get_context_windows_by_summary(summary_id)
+    windows_json = html_escape(_json.dumps(context_windows))
 
     note_html = ""
     if is_favorite:
         if custom_text:
             note_html = f"""<div class="fav-note" id="fav-note-{summary_id}">
-                <div class="fav-note-display"><div class="fav-note-content">{safe_custom}</div>
-                <div style="margin-top:8px;"><button class="btn btn-ghost btn-sm fav-note-toggle" onclick="toggleNoteEdit({summary_id})">编辑备注</button></div></div>
+                <div class="fav-note-display">
+                    <div class="fav-note-label">
+                        <svg aria-hidden="true"><use href="#icon-heart-filled"></use></svg>
+                        收藏备注
+                    </div>
+                    <div class="fav-note-content">{safe_custom}</div>
+                    <div style="margin-top:10px;">
+                        <button class="btn btn-ghost btn-sm fav-note-toggle" onclick="toggleNoteEdit({summary_id})">编辑备注</button>
+                    </div>
+                </div>
                 <div class="fav-note-edit" style="display:none;"><textarea maxlength="4000" placeholder="添加收藏备注...">{safe_custom}</textarea>
                 <div class="fav-note-actions"><button class="btn btn-ghost btn-sm" onclick="toggleNoteEdit({summary_id})">取消</button>
                 <button class="btn btn-sm" onclick="saveNote({summary_id})">保存</button><span class="fav-note-char-count"></span></div></div></div>"""
         else:
             note_html = f"""<div class="fav-note" id="fav-note-{summary_id}">
-                <div class="fav-note-display"><button class="btn btn-ghost btn-sm fav-note-toggle" onclick="toggleNoteEdit({summary_id})">+ 添加备注</button></div>
+                <div class="fav-note-display">
+                    <button class="btn btn-ghost btn-sm fav-note-toggle" onclick="toggleNoteEdit({summary_id})">
+                        <svg style="width:12px;height:12px;" aria-hidden="true"><use href="#icon-star"></use></svg>
+                        添加备注
+                    </button>
+                </div>
                 <div class="fav-note-edit" style="display:none;"><textarea maxlength="4000" placeholder="添加收藏备注..."></textarea>
                 <div class="fav-note-actions"><button class="btn btn-ghost btn-sm" onclick="toggleNoteEdit({summary_id})">取消</button>
                 <button class="btn btn-sm" onclick="saveNote({summary_id})">保存</button><span class="fav-note-char-count"></span></div></div></div>"""
@@ -903,12 +916,10 @@ async def _favorite_card_html_inner(
     return HTMLResponse(
         f"""<div class="summary-item animate-fade-in{fav_class}" data-summary-item-id="{summary_id}">
             <div class="summary-header">
-                <div class="summary-group-name">
-                    <svg style="width:18px;height:18px;vertical-align:middle;margin-right:4px;color:var(--accent);" aria-hidden="true" role="img"><use href="#icon-groups"></use></svg>
-                    {html_escape(group_name)} {badge}
+                <div class="summary-period-title">
+                    {html_escape(period_label)} {badge}
                 </div>
                 <div class="summary-actions">
-                    <span class="summary-msg-count">{html_escape(period_label)}</span>
                     <span class="summary-msg-count">{message_count} 条消息</span>
                     <button class="btn btn-ghost btn-sm fav-btn{btn_class}"
                             hx-post="/summaries/{summary_id}/favorite"
@@ -1030,15 +1041,24 @@ def _favorite_note_html(summary_id: int, custom_text: str | None) -> HTMLRespons
         safe_text = escape(custom_text).replace("\n", "<br>")
         return HTMLResponse(
             f"""<div class="fav-note-display" data-summary-id="{summary_id}">
+                    <div class="fav-note-label">
+                        <svg aria-hidden="true"><use href="#icon-heart-filled"></use></svg>
+                        收藏备注
+                    </div>
                     <div class="fav-note-content">{safe_text}</div>
-                    <button class="btn btn-ghost btn-sm fav-note-edit-btn"
-                            onclick="toggleNoteEdit({summary_id})">编辑</button>
+                    <div style="margin-top:10px;">
+                        <button class="btn btn-ghost btn-sm fav-note-toggle"
+                                onclick="toggleNoteEdit({summary_id})">编辑备注</button>
+                    </div>
                 </div>"""
         )
     return HTMLResponse(
-        f"""<div class="fav-note-empty" data-summary-id="{summary_id}">
-                <button class="btn btn-ghost btn-sm fav-note-add-btn"
-                        onclick="toggleNoteEdit({summary_id})">+ 添加备注</button>
+        f"""<div class="fav-note-display" data-summary-id="{summary_id}">
+                <button class="btn btn-ghost btn-sm fav-note-toggle"
+                        onclick="toggleNoteEdit({summary_id})">
+                    <svg style="width:12px;height:12px;" aria-hidden="true"><use href="#icon-star"></use></svg>
+                    添加备注
+                </button>
             </div>"""
     )
 

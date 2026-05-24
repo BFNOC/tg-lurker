@@ -11,7 +11,7 @@
     }
     .fav-note-toggle { cursor: pointer; color: var(--text-muted); font-size: 12px; }
     .fav-note-toggle:hover { color: var(--favorite-gold); }
-    .summary-period-divider {
+    .summary-group-divider {
         display: flex;
         align-items: center;
         gap: 12px;
@@ -21,11 +21,27 @@
         font-weight: 700;
         color: var(--text-secondary);
     }
-    .summary-period-divider::after {
+    .summary-group-divider svg {
+        width: 18px;
+        height: 18px;
+        color: var(--accent);
+        flex-shrink: 0;
+    }
+    .summary-group-divider::after {
         content: "";
         flex: 1;
         height: 1px;
         background: var(--border);
+    }
+    .summary-period-title {
+        font-family: var(--font-display);
+        font-weight: 700;
+        font-size: 18px;
+        color: var(--text);
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
     }
 </style>
 
@@ -64,21 +80,22 @@
     <div class="section-divider"></div>
 
     {% if summaries %}
-        {% set ns = namespace(period='') %}
+        {% set ns = namespace(group_id=None) %}
         {% for s in summaries %}
-        {% if s.biz_period != ns.period %}
-        {% set ns.period = s.biz_period %}
-        <div class="summary-period-divider">{{ s.biz_period_label }}</div>
+        {% if s.group_id != ns.group_id %}
+        {% set ns.group_id = s.group_id %}
+        <div class="summary-group-divider">
+            <svg aria-hidden="true" role="img"><use href="#icon-groups"></use></svg>
+            <span>{{ s.group_name }}</span>
+        </div>
         {% endif %}
         <div class="summary-item animate-fade-in {% if s.is_favorite %}favorited{% endif %}" style="animation-delay: {{ loop.index0 * 0.1 }}s;" data-summary-item-id="{{ s.id }}">
             <div class="summary-header">
-                <div class="summary-group-name">
-                    <svg style="width:18px;height:18px;vertical-align:middle;margin-right:6px;color:var(--accent);" aria-hidden="true" role="img"><use href="#icon-groups"></use></svg>
-                    {{ s.group_name }}
+                <div class="summary-period-title">
+                    {{ s.biz_period_label }}
                     {% if s.is_favorite %}<span class="fav-badge"><svg style="width:10px;height:10px;" aria-hidden="true"><use href="#icon-star-filled"></use></svg> 已收藏</span>{% endif %}
                 </div>
                 <div class="summary-actions">
-                    <span class="summary-msg-count">{{ s.biz_period_label }}</span>
                     <span class="summary-msg-count">{{ s.message_count }} 条消息</span>
                     {% if s.is_favorite %}
                     <button class="btn btn-ghost btn-sm fav-btn active"
@@ -338,39 +355,19 @@ function saveNote(summaryId) {
         body: formData,
     })
     .then(r => {
-        if (!r.ok) throw new Error('Save failed');
+        if (!r.ok) {
+            return r.text().then(text => { throw new Error(text || 'Save failed'); });
+        }
         return r.text();
     })
-    .then(() => {
+    .then(html => {
         showToast(customText ? '备注已保存' : '备注已清空');
-        toggleNoteEdit(summaryId);
-        const contentDiv = noteDiv.querySelector('.fav-note-content');
-        if (customText) {
-            if (contentDiv) {
-                contentDiv.textContent = customText;
-            } else {
-                const displayDiv = noteDiv.querySelector('.fav-note-display');
-                displayDiv.innerHTML = '';
-                const noteBlock = document.createElement('div');
-                noteBlock.className = 'fav-note-content';
-                noteBlock.textContent = customText;
-                noteBlock.style.whiteSpace = 'pre-wrap';
-                displayDiv.appendChild(noteBlock);
-                const editBtn = document.createElement('div');
-                editBtn.style.marginTop = '8px';
-                editBtn.innerHTML = '<button class="btn btn-ghost btn-sm fav-note-toggle">编辑备注</button>';
-                editBtn.querySelector('button').onclick = function() { toggleNoteEdit(summaryId); };
-                displayDiv.appendChild(editBtn);
-            }
-        } else {
-            const displayDiv = noteDiv.querySelector('.fav-note-display');
-            displayDiv.innerHTML = '';
-            const addBtn = document.createElement('button');
-            addBtn.className = 'btn btn-ghost btn-sm fav-note-toggle';
-            addBtn.textContent = '+ 添加备注';
-            addBtn.onclick = function() { toggleNoteEdit(summaryId); };
-            displayDiv.appendChild(addBtn);
+        const displayDiv = noteDiv.querySelector('.fav-note-display');
+        if (displayDiv) {
+            displayDiv.outerHTML = html;
         }
+        const edit = noteDiv.querySelector('.fav-note-edit');
+        if (edit) edit.style.display = 'none';
     })
     .catch(e => showToast('保存失败: ' + e.message, 'error'));
 }

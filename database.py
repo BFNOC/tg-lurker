@@ -710,29 +710,60 @@ class Database:
         self, biz_date: str, group_id: int | None = None
     ) -> list[dict]:
         """Fetches summaries for a business date, optionally filtered by group."""
-        base = """SELECT s.id, s.biz_date, s.biz_period, s.group_id, s.group_name,
-                         s.message_count, s.summary_text, s.created_at,
-                         CASE WHEN f.id IS NOT NULL THEN 1 ELSE 0 END AS is_favorite,
-                         f.custom_text AS favorite_custom_text,
-                         f.created_at AS favorited_at
-                  FROM summaries s
-                  LEFT JOIN summary_favorites f
-                      ON f.biz_date = s.biz_date
-                      AND f.group_id = s.group_id
-                      AND f.biz_period = s.biz_period"""
+        select_summary = """SELECT s.id, s.biz_date, s.biz_period, s.group_id, s.group_name,
+                                   s.message_count, s.summary_text, s.created_at,
+                                   CASE WHEN f.id IS NOT NULL THEN 1 ELSE 0 END AS is_favorite,
+                                   f.custom_text AS favorite_custom_text,
+                                   f.created_at AS favorited_at"""
+        select_group_order = """,
+                                   gm.group_latest_created_at,
+                                   gm.group_sort_name"""
+        from_clause = """ FROM summaries s
+                          LEFT JOIN summary_favorites f
+                              ON f.biz_date = s.biz_date
+                              AND f.group_id = s.group_id
+                              AND f.biz_period = s.biz_period"""
         if group_id is not None:
             cursor = await self.conn.execute(
-                base + " WHERE s.biz_date = ? AND s.group_id = ? ORDER BY s.created_at DESC",
+                select_summary
+                + from_clause
+                + " WHERE s.biz_date = ? AND s.group_id = ? ORDER BY s.created_at DESC, s.id DESC",
                 (biz_date, group_id),
             )
         else:
             cursor = await self.conn.execute(
-                base + " WHERE s.biz_date = ? ORDER BY s.created_at DESC",
-                (biz_date,),
+                """WITH group_meta AS (
+                       SELECT group_id,
+                              created_at AS group_latest_created_at,
+                              group_name AS group_sort_name
+                       FROM (
+                           SELECT group_id, group_name, created_at,
+                                  ROW_NUMBER() OVER (
+                                      PARTITION BY group_id
+                                      ORDER BY created_at DESC, id DESC
+                                  ) AS rn
+                           FROM summaries
+                           WHERE biz_date = ?
+                       )
+                       WHERE rn = 1
+                   )
+                   """
+                + select_summary
+                + select_group_order
+                + from_clause
+                + " JOIN group_meta gm ON gm.group_id = s.group_id"
+                + """ WHERE s.biz_date = ?
+                       ORDER BY group_latest_created_at DESC,
+                                group_sort_name COLLATE NOCASE ASC,
+                                s.group_id ASC,
+                                s.created_at DESC,
+                                s.id DESC""",
+                (biz_date, biz_date),
             )
         rows = await cursor.fetchall()
-        return [
-            {
+        summaries = []
+        for r in rows:
+            summary = {
                 "id": r[0],
                 "biz_date": r[1],
                 "biz_period": r[2],
@@ -745,8 +776,11 @@ class Database:
                 "favorite_custom_text": r[9],
                 "favorited_at": r[10],
             }
-            for r in rows
-        ]
+            if len(r) > 11:
+                summary["group_latest_created_at"] = r[11]
+                summary["group_sort_name"] = r[12]
+            summaries.append(summary)
+        return summaries
 
     async def get_available_dates(self, limit: int = 30) -> list[str]:
         """Returns distinct business dates that have summaries, most recent first."""
@@ -771,8 +805,8 @@ class Database:
         rows = await cursor.fetchall()
         return [{"biz_date": r[0], "total": r[1] or 0} for r in rows]
 
-    async def get_summary_with_context(self, summary_id: int) -> dict | None:
-        """读取单条摘要及其全部上下文窗口和上下文消息，用于导出。"""
+    async def get_summary(self, summary_id: int) -> dict | None:
+        """Returns one summary row with favorite metadata but without context messages."""
         cursor = await self.conn.execute(
             """SELECT s.id, s.biz_date, s.biz_period, s.group_id, s.group_name,
                       s.message_count, s.summary_text, s.created_at,
@@ -791,7 +825,7 @@ class Database:
         if not row:
             return None
 
-        summary = {
+        return {
             "id": row[0],
             "biz_date": row[1],
             "biz_period": row[2],
@@ -803,9 +837,15 @@ class Database:
             "is_favorite": bool(row[8]),
             "favorite_custom_text": row[9],
             "favorited_at": row[10],
-            "windows": [],
         }
 
+    async def get_summary_with_context(self, summary_id: int) -> dict | None:
+        """读取单条摘要及其全部上下文窗口和上下文消息，用于导出。"""
+        summary = await self.get_summary(summary_id)
+        if not summary:
+            return None
+
+        summary["windows"] = []
         windows_cursor = await self.conn.execute(
             """SELECT id, ref_message_id
                FROM context_windows

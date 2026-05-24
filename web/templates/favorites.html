@@ -180,39 +180,19 @@ function saveNote(summaryId) {
         body: formData,
     })
     .then(r => {
-        if (!r.ok) throw new Error('Save failed');
+        if (!r.ok) {
+            return r.text().then(text => { throw new Error(text || 'Save failed'); });
+        }
         return r.text();
     })
-    .then(() => {
+    .then(html => {
         showToast(customText ? '备注已保存' : '备注已清空');
-        toggleNoteEdit(summaryId);
-        const contentDiv = noteDiv.querySelector('.fav-note-content');
-        if (customText) {
-            if (contentDiv) {
-                contentDiv.textContent = customText;
-            } else {
-                const displayDiv = noteDiv.querySelector('.fav-note-display');
-                displayDiv.innerHTML = '';
-                const noteBlock = document.createElement('div');
-                noteBlock.className = 'fav-note-content';
-                noteBlock.textContent = customText;
-                noteBlock.style.whiteSpace = 'pre-wrap';
-                displayDiv.appendChild(noteBlock);
-                const editBtn = document.createElement('div');
-                editBtn.style.marginTop = '8px';
-                editBtn.innerHTML = '<button class="btn btn-ghost btn-sm fav-note-toggle">编辑备注</button>';
-                editBtn.querySelector('button').onclick = function() { toggleNoteEdit(summaryId); };
-                displayDiv.appendChild(editBtn);
-            }
-        } else {
-            const displayDiv = noteDiv.querySelector('.fav-note-display');
-            displayDiv.innerHTML = '';
-            const addBtn = document.createElement('button');
-            addBtn.className = 'btn btn-ghost btn-sm fav-note-toggle';
-            addBtn.textContent = '+ 添加备注';
-            addBtn.onclick = function() { toggleNoteEdit(summaryId); };
-            displayDiv.appendChild(addBtn);
+        const displayDiv = noteDiv.querySelector('.fav-note-display');
+        if (displayDiv) {
+            displayDiv.outerHTML = html;
         }
+        const edit = noteDiv.querySelector('.fav-note-edit');
+        if (edit) edit.style.display = 'none';
     })
     .catch(e => showToast('保存失败: ' + e.message, 'error'));
 }
