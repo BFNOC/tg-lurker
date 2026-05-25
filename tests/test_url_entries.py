@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 
 from fastapi.testclient import TestClient
+import pytest
 
 from config import Config
 from database import Database
@@ -196,6 +198,82 @@ def test_sync_url_entries_for_source_is_idempotent(tmp_path):
         assert await db.count_url_entries() == 1
         entries = await db.get_url_entries()
         assert entries[0]["url"] == "https://example.test/a"
+
+    asyncio.run(_with_db(tmp_path, run))
+
+
+def test_summary_url_entries_are_deduped_across_summaries(tmp_path):
+    """不同摘要重复提到同一 URL 时，链接库只保留最新一条摘要记录。"""
+    async def run(db: Database):
+        first_id = await db.insert_summary(
+            "2026-05-24",
+            -100,
+            "测试群A",
+            1,
+            "链接 https://example.test/a",
+        )
+        second_id = await db.insert_summary(
+            "2026-05-24",
+            -101,
+            "测试群B",
+            1,
+            "重复链接 https://example.test/a",
+        )
+        assert first_id is not None
+        assert second_id is not None
+
+        entries = await db.get_url_entries(source_type="summary")
+
+        assert await db.count_url_entries(source_type="summary") == 1
+        assert entries[0]["url"] == "https://example.test/a"
+        assert entries[0]["source_id"] == second_id
+        assert entries[0]["group_name"] == "测试群B"
+
+        await db.sync_url_entries_for_source(
+            "summary",
+            first_id,
+            "旧摘要重同步 https://example.test/a",
+            source_label="测试群A",
+            group_name="测试群A",
+        )
+        entries = await db.get_url_entries(source_type="summary")
+
+        assert len(entries) == 1
+        assert entries[0]["source_id"] == second_id
+        assert entries[0]["group_name"] == "测试群B"
+
+    asyncio.run(_with_db(tmp_path, run))
+
+
+def test_url_entries_migration_dedupes_existing_summary_urls(tmp_path):
+    """旧库已有重复摘要 URL 时，迁移会清理重复项并建立物理唯一约束。"""
+    async def run(db: Database):
+        await db.conn.execute("DROP INDEX IF EXISTS idx_url_entries_summary_url_unique")
+        await db.conn.executemany(
+            """INSERT INTO url_entries (url, domain, source_type, source_id, group_name)
+               VALUES (?, ?, ?, ?, ?)""",
+            [
+                ("https://example.test/a", "example.test", "summary", 1, "旧群A"),
+                ("https://example.test/a", "example.test", "summary", 2, "旧群B"),
+            ],
+        )
+        await db.conn.commit()
+
+        await db._migrate_url_entries()
+        await db.conn.commit()
+        entries = await db.get_url_entries(source_type="summary")
+
+        assert len(entries) == 1
+        assert entries[0]["url"] == "https://example.test/a"
+        assert entries[0]["source_id"] == 2
+        assert entries[0]["group_name"] == "旧群B"
+        with pytest.raises(sqlite3.IntegrityError):
+            await db.conn.execute(
+                """INSERT INTO url_entries (url, domain, source_type, source_id)
+                   VALUES (?, ?, ?, ?)""",
+                ("https://example.test/a", "example.test", "summary", 3),
+            )
+        await db.conn.rollback()
 
     asyncio.run(_with_db(tmp_path, run))
 

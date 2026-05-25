@@ -22,6 +22,8 @@ _URL_PATTERN = re.compile(
 _URL_TRAILING_PUNCTUATION = ".,!?;:)]}，。！？；：）】》、"
 _URL_MAX_TEXT_LENGTH = 20000
 _URL_CONTEXT_RADIUS = 120
+_URL_DEDUPE_DELETE_BATCH_SIZE = 900
+_URL_SUMMARY_UNIQUE_INDEX = "idx_url_entries_summary_url_unique"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS messages (
@@ -322,6 +324,16 @@ class Database:
         await self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_url_entries_url ON url_entries(url)"
         )
+        cursor = await self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?",
+            (_URL_SUMMARY_UNIQUE_INDEX,),
+        )
+        if await cursor.fetchone() is None:
+            await self._dedupe_summary_url_entries()
+        await self.conn.execute(
+            f"CREATE UNIQUE INDEX IF NOT EXISTS {_URL_SUMMARY_UNIQUE_INDEX} "
+            "ON url_entries(url) WHERE source_type = 'summary'"
+        )
         await self.conn.execute(
             """CREATE TRIGGER IF NOT EXISTS trg_url_entries_summary_delete
                AFTER DELETE ON summaries
@@ -335,6 +347,19 @@ class Database:
                BEGIN
                    DELETE FROM url_entries WHERE source_type = 'bio' AND source_id = OLD.sender_id;
                END"""
+        )
+
+    async def _dedupe_summary_url_entries(self) -> None:
+        """Keeps one summary URL entry per normalized URL before enforcing uniqueness."""
+        await self.conn.execute(
+            """DELETE FROM url_entries
+               WHERE source_type = 'summary'
+                 AND id NOT IN (
+                     SELECT MAX(id)
+                     FROM url_entries
+                     WHERE source_type = 'summary'
+                     GROUP BY url
+                 )"""
         )
 
     async def _backfill_url_entries_once(self) -> None:
@@ -1262,87 +1287,109 @@ class Database:
         if source_type not in ("summary", "bio"):
             raise ValueError(f"Unsupported URL source_type: {source_type}")
 
-        await self.conn.execute(
-            "DELETE FROM url_entries WHERE source_type = ? AND source_id = ?",
-            (source_type, source_id),
-        )
-        entries = self.extract_urls(text)
-        if entries:
-            now = int(time.time())
-            row_created_at = created_at or now
-            await self.conn.executemany(
-                """INSERT OR IGNORE INTO url_entries
-                   (url, domain, source_type, source_id, source_label, source_context,
-                    biz_date, group_id, group_name, sender_id, sender_name, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                [
-                    (
-                        entry["url"],
-                        entry["domain"],
-                        source_type,
-                        source_id,
-                        source_label,
-                        entry["source_context"],
-                        biz_date,
-                        group_id,
-                        group_name,
-                        sender_id,
-                        sender_name,
-                        row_created_at,
-                        now,
-                    )
-                    for entry in entries
-                ],
+        try:
+            await self.conn.execute(
+                "DELETE FROM url_entries WHERE source_type = ? AND source_id = ?",
+                (source_type, source_id),
             )
-        if commit:
-            await self.conn.commit()
-        return len(entries)
+            entries = self.extract_urls(text)
+            if entries:
+                now = int(time.time())
+                row_created_at = created_at or now
+                if source_type == "summary":
+                    urls = [entry["url"] for entry in entries]
+                    for i in range(0, len(urls), _URL_DEDUPE_DELETE_BATCH_SIZE):
+                        chunk = urls[i : i + _URL_DEDUPE_DELETE_BATCH_SIZE]
+                        placeholders = ", ".join("?" for _ in chunk)
+                        await self.conn.execute(
+                            f"""DELETE FROM url_entries
+                                WHERE source_type = 'summary'
+                                  AND source_id < ?
+                                  AND url IN ({placeholders})""",
+                            [source_id, *chunk],
+                        )
+                await self.conn.executemany(
+                    """INSERT OR IGNORE INTO url_entries
+                       (url, domain, source_type, source_id, source_label, source_context,
+                        biz_date, group_id, group_name, sender_id, sender_name, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    [
+                        (
+                            entry["url"],
+                            entry["domain"],
+                            source_type,
+                            source_id,
+                            source_label,
+                            entry["source_context"],
+                            biz_date,
+                            group_id,
+                            group_name,
+                            sender_id,
+                            sender_name,
+                            row_created_at,
+                            now,
+                        )
+                        for entry in entries
+                    ],
+                )
+            if commit:
+                await self.conn.commit()
+            return len(entries)
+        except Exception:
+            if commit:
+                await self.conn.rollback()
+            raise
 
     async def backfill_url_entries(self, commit: bool = True) -> int:
         """Backfills URL entries from historical summaries and fetched Bio rows."""
-        total = 0
-        cursor = await self.conn.execute(
-            """SELECT id, biz_date, group_id, group_name, summary_text, created_at
-               FROM summaries
-               ORDER BY id ASC"""
-        )
-        for row in await cursor.fetchall():
-            total += await self.sync_url_entries_for_source(
-                "summary",
-                row[0],
-                row[4],
-                source_label=row[3],
-                biz_date=row[1],
-                group_id=row[2],
-                group_name=row[3],
-                created_at=row[5],
-                commit=False,
+        try:
+            total = 0
+            cursor = await self.conn.execute(
+                """SELECT id, biz_date, group_id, group_name, summary_text, created_at
+                   FROM summaries
+                   ORDER BY id ASC"""
             )
+            for row in await cursor.fetchall():
+                total += await self.sync_url_entries_for_source(
+                    "summary",
+                    row[0],
+                    row[4],
+                    source_label=row[3],
+                    biz_date=row[1],
+                    group_id=row[2],
+                    group_name=row[3],
+                    created_at=row[5],
+                    commit=False,
+                )
 
-        cursor = await self.conn.execute(
-            """SELECT sender_id, username, display_name, bio_text, fetched_at,
-                      last_group_id, last_group_name
-               FROM sender_profiles
-               WHERE bio_text IS NOT NULL AND TRIM(bio_text) != ''
-               ORDER BY sender_id ASC"""
-        )
-        for row in await cursor.fetchall():
-            label = row[2] or (f"@{row[1]}" if row[1] else str(row[0]))
-            total += await self.sync_url_entries_for_source(
-                "bio",
-                row[0],
-                row[3],
-                source_label=label,
-                group_id=row[5],
-                group_name=row[6],
-                sender_id=row[0],
-                sender_name=label,
-                created_at=row[4],
-                commit=False,
+            cursor = await self.conn.execute(
+                """SELECT sender_id, username, display_name, bio_text, fetched_at,
+                          last_group_id, last_group_name
+                   FROM sender_profiles
+                   WHERE bio_text IS NOT NULL AND TRIM(bio_text) != ''
+                   ORDER BY sender_id ASC"""
             )
-        if commit:
-            await self.conn.commit()
-        return total
+            for row in await cursor.fetchall():
+                label = row[2] or (f"@{row[1]}" if row[1] else str(row[0]))
+                total += await self.sync_url_entries_for_source(
+                    "bio",
+                    row[0],
+                    row[3],
+                    source_label=label,
+                    group_id=row[5],
+                    group_name=row[6],
+                    sender_id=row[0],
+                    sender_name=label,
+                    created_at=row[4],
+                    commit=False,
+                )
+            if commit:
+                await self.conn.commit()
+            return total
+        except Exception:
+            if commit:
+                await self.conn.rollback()
+            raise
 
     def _url_entries_filters(
         self,
