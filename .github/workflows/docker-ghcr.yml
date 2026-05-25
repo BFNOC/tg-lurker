@@ -13,7 +13,7 @@ on:
 
 permissions:
   actions: write
-  contents: read
+  contents: write
   packages: write
 
 env:
@@ -27,6 +27,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Prepare image metadata
         id: prep
@@ -34,18 +36,76 @@ jobs:
         run: |
           repository="$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
           image="${REGISTRY}/${repository}"
-          raw_version="$(tr -d '\r' < VERSION 2>/dev/null | head -n 1 || true)"
+          raw_version="$(head -n 1 VERSION 2>/dev/null | tr -d '[:space:]' || true)"
           version="${raw_version:-dev}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9._-]+)?$ ]]; then
+            echo "::error::VERSION must be semver-like, got '${version}'"
+            exit 1
+          fi
           commit="$(git rev-parse --short HEAD)"
+          tag="v${version}"
+          major_minor=""
+          if [[ "$version" =~ ^([0-9]+)\.([0-9]+)(\.|$|-) ]]; then
+            major_minor="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+          fi
+          version_changed=false
+          if [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == "refs/heads/main" ]]; then
+            before_sha="${{ github.event.before }}"
+            zero_sha="0000000000000000000000000000000000000000"
+            if [[ "$before_sha" == "$zero_sha" ]]; then
+              if git rev-parse --verify HEAD^ >/dev/null 2>&1; then
+                if ! git diff --quiet HEAD^ "$GITHUB_SHA" -- VERSION; then
+                  version_changed=true
+                fi
+              else
+                version_changed=true
+              fi
+            elif git cat-file -e "${before_sha}^{commit}" 2>/dev/null; then
+              if ! git diff --quiet "$before_sha" "$GITHUB_SHA" -- VERSION; then
+                version_changed=true
+              fi
+            else
+              echo "::warning::Previous commit ${before_sha} is not available; VERSION change detection skipped."
+            fi
+          fi
+          publish=false
+          if [[ "$GITHUB_REF" == refs/tags/* || "$version_changed" == "true" ]]; then
+            publish=true
+          fi
           echo "image=${image}" >> "$GITHUB_OUTPUT"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "major_minor=${major_minor}" >> "$GITHUB_OUTPUT"
           echo "commit=${commit}" >> "$GITHUB_OUTPUT"
+          echo "version_changed=${version_changed}" >> "$GITHUB_OUTPUT"
+          echo "publish=${publish}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Create version tag
+        if: steps.prep.outputs.version_changed == 'true'
+        shell: bash
+        run: |
+          tag="${{ steps.prep.outputs.tag }}"
+          remote_ref="$(git ls-remote --tags origin "refs/tags/${tag}" | awk 'NR == 1 { print $1 }')"
+          remote_commit="$(git ls-remote --tags origin "refs/tags/${tag}^{}" | awk 'NR == 1 { print $1 }')"
+          remote_sha="${remote_commit:-$remote_ref}"
+          if [[ -n "$remote_sha" ]]; then
+            if [[ "$remote_sha" == "$GITHUB_SHA" ]]; then
+              echo "Tag ${tag} already points to ${GITHUB_SHA}; continuing."
+              exit 0
+            fi
+            echo "::error::Tag ${tag} already exists at ${remote_sha}. Bump VERSION or delete the old tag first."
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "$tag" "$GITHUB_SHA"
+          git push origin "$tag"
+
       - name: Log in to GHCR
-        if: startsWith(github.ref, 'refs/tags/')
+        if: steps.prep.outputs.publish == 'true'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -58,8 +118,10 @@ jobs:
         with:
           images: ${{ steps.prep.outputs.image }}
           tags: |
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') }}
-            type=ref,event=branch
+            type=raw,value=latest,enable=${{ steps.prep.outputs.publish == 'true' }}
+            type=raw,value=${{ steps.prep.outputs.tag }},enable=${{ steps.prep.outputs.version_changed == 'true' }}
+            type=raw,value=${{ steps.prep.outputs.version }},enable=${{ steps.prep.outputs.version_changed == 'true' }}
+            type=raw,value=${{ steps.prep.outputs.major_minor }},enable=${{ steps.prep.outputs.version_changed == 'true' && steps.prep.outputs.major_minor != '' }}
             type=ref,event=tag
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -70,7 +132,7 @@ jobs:
         with:
           context: .
           platforms: linux/amd64
-          push: ${{ startsWith(github.ref, 'refs/tags/') }}
+          push: ${{ steps.prep.outputs.publish == 'true' }}
           build-args: |
             APP_VERSION=${{ steps.prep.outputs.version }}
             APP_COMMIT=${{ steps.prep.outputs.commit }}
