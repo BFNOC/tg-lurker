@@ -1,0 +1,35 @@
+{% if unsummarized %}
+<div id="unsummarized-card" class="card animate-fade-in" style="animation-delay: 0.05s; border-color: var(--warning);">
+    <div class="unsummarized-card-header">
+        <div class="card-title" style="color:var(--warning); margin-bottom:0;">
+            <svg aria-hidden="true" role="img"><use href="#icon-alert"></use></svg>
+            有未摘要的历史消息
+        </div>
+        <form hx-post="/messages/unsummarized/delete"
+              hx-target="#unsummarized-card"
+              hx-swap="outerHTML"
+              hx-confirm="确定删除全部未摘要历史消息吗？这会删除列表中全部原始消息，不可恢复。">
+            <input type="hidden" name="scope" value="all">
+            <button type="submit" class="btn btn-ghost btn-sm delete-btn">删除全部</button>
+        </form>
+    </div>
+    <p style="font-size:14px;color:var(--text-secondary);margin-bottom:12px;">以下日期的消息尚未生成摘要（可能是 LLM 调用失败）。可手动触发摘要，或删除不再需要的原始消息。</p>
+    {% if unsummarized_notice %}
+    <div class="unsummarized-notice">{{ unsummarized_notice }}</div>
+    {% endif %}
+    <div class="unsummarized-list">
+        {% for u in unsummarized %}
+        <div class="unsummarized-pill">
+            <span>{{ u.biz_date }} ({{ u.msg_count }}条)</span>
+            <form hx-post="/messages/unsummarized/delete"
+                  hx-target="#unsummarized-card"
+                  hx-swap="outerHTML"
+                  hx-confirm="确定删除 {{ u.biz_date }} 的 {{ u.msg_count }} 条原始消息吗？此操作不可恢复。">
+                <input type="hidden" name="biz_date" value="{{ u.biz_date }}">
+                <button type="submit" class="btn-link delete-btn">删除</button>
+            </form>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}

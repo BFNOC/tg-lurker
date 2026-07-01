@@ -652,7 +652,7 @@ class Database:
         return [{"sender_id": r[0], "sender_name": r[1], "count": r[2]} for r in rows]
 
     async def get_unsummarized_dates(self) -> list[dict]:
-        """Returns business dates that have messages but no auto-generated summary."""
+        """Returns dates with messages and no auto summary, using date-level semantics."""
         cursor = await self.conn.execute(
             """SELECT m.biz_date, COUNT(*) as msg_count
                FROM messages m
@@ -664,6 +664,25 @@ class Database:
         )
         rows = await cursor.fetchall()
         return [{"biz_date": r[0], "msg_count": r[1]} for r in rows]
+
+    async def delete_unsummarized_messages_by_dates(self, biz_dates: list[str]) -> int:
+        """Deletes date-level unsummarized messages, preserving any date with an auto summary."""
+        if not biz_dates:
+            return 0
+
+        placeholders = ",".join("?" for _ in biz_dates)
+        cursor = await self.conn.execute(
+            f"""DELETE FROM messages
+               WHERE biz_date IN ({placeholders})
+                 AND NOT EXISTS (
+                     SELECT 1 FROM summaries s
+                     WHERE s.biz_date = messages.biz_date
+                       AND s.biz_period NOT LIKE 'manual_%'
+                 )""",
+            tuple(biz_dates),
+        )
+        await self.conn.commit()
+        return cursor.rowcount
 
     # --- summaries ---
 

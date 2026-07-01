@@ -54,6 +54,57 @@
         color: var(--accent-hover);
         text-decoration: underline;
     }
+    .unsummarized-card-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 16px;
+        margin-bottom: 10px;
+    }
+    .unsummarized-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+    .unsummarized-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 36px;
+        padding: 4px 6px 4px 12px;
+        border-radius: 100px;
+        background: var(--border);
+        color: var(--text-muted);
+        font-size: 13px;
+        font-weight: 700;
+    }
+    .unsummarized-pill form {
+        display: inline-flex;
+    }
+    .unsummarized-pill button {
+        min-width: 44px;
+        min-height: 28px;
+        border-radius: 100px;
+        font-size: 12px;
+        color: var(--danger);
+    }
+    .unsummarized-notice {
+        display: inline-flex;
+        margin-bottom: 12px;
+        padding: 6px 10px;
+        border: 1px solid var(--success);
+        border-radius: var(--radius-sm);
+        background: var(--success-bg);
+        color: var(--success);
+        font-size: 13px;
+        font-weight: 700;
+    }
+    @media (max-width: 640px) {
+        .unsummarized-card-header {
+            align-items: flex-start;
+            flex-direction: column;
+        }
+    }
 </style>
 
 <div class="page-header">
@@ -95,20 +146,7 @@
     </div>
 </div>
 
-{% if unsummarized %}
-<div class="card animate-fade-in" style="animation-delay: 0.05s; border-color: var(--warning);">
-    <div class="card-title" style="color:var(--warning);">
-        <svg aria-hidden="true" role="img"><use href="#icon-alert"></use></svg>
-        有未摘要的历史消息
-    </div>
-    <p style="font-size:14px;color:var(--text-secondary);margin-bottom:12px;">以下日期的消息尚未生成摘要（可能是 LLM 调用失败）。请在下方手动触发。</p>
-    <div style="display:flex;flex-wrap:wrap;gap:8px;">
-        {% for u in unsummarized %}
-        <span class="badge badge-paused">{{ u.biz_date }} ({{ u.msg_count }}条)</span>
-        {% endfor %}
-    </div>
-</div>
-{% endif %}
+{% include "_unsummarized_card.html" %}
 
 <div class="card animate-fade-in" style="animation-delay: 0.1s;">
     <div class="card-title">

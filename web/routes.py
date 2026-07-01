@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import logging
 import re
 import zipfile
 from datetime import datetime
@@ -21,6 +22,7 @@ from web.auth import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 FREQUENCY_PRESETS = {
     "default": None,
@@ -559,6 +561,59 @@ async def dashboard(request: Request):
         "biz_date": biz_date,
         "unsummarized": unsummarized,
     })
+
+
+def _unsummarized_dates_by_date(rows: list[dict]) -> dict[str, dict]:
+    """Indexes unsummarized date rows by business date."""
+    return {str(row["biz_date"]): row for row in rows}
+
+
+def _unsummarized_card_response(
+    request: Request,
+    unsummarized: list[dict],
+    notice: str = "",
+) -> HTMLResponse:
+    """Returns the dashboard unsummarized card fragment, or removes it when empty."""
+    if not unsummarized:
+        return HTMLResponse("")
+    return templates.TemplateResponse(request, "_unsummarized_card.html", {
+        "unsummarized": unsummarized,
+        "unsummarized_notice": notice,
+    })
+
+
+@router.post("/messages/unsummarized/delete")
+async def delete_unsummarized_messages(request: Request):
+    """Deletes dashboard-listed unsummarized message dates after server-side revalidation."""
+    redirect = _require_auth(request)
+    if redirect:
+        return redirect
+    csrf_err = await _require_csrf(request)
+    if csrf_err:
+        return csrf_err
+
+    db = request.app.state.db
+    form = await request.form()
+    scope = str(form.get("scope", "")).strip()
+    biz_date = str(form.get("biz_date", "")).strip()
+
+    allowed = _unsummarized_dates_by_date(await db.get_unsummarized_dates())
+    if scope == "all":
+        target_dates = list(allowed)
+    elif biz_date in allowed:
+        target_dates = [biz_date]
+    else:
+        return HTMLResponse("<p style='color:var(--danger)'>该日期不在未摘要列表中</p>", status_code=400)
+
+    deleted = await db.delete_unsummarized_messages_by_dates(target_dates)
+
+    logger.warning(
+        "Deleted %s unsummarized messages for dates=%s",
+        deleted,
+        ",".join(target_dates),
+    )
+    refreshed = await db.get_unsummarized_dates()
+    return _unsummarized_card_response(request, refreshed, f"已删除 {deleted} 条原始消息")
 
 
 @router.get("/stats")
