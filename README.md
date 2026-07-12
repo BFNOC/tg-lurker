@@ -7,7 +7,7 @@ Telegram 群聊潜水信息收集器 — 静默监控群消息，AI 每日摘要
 - **被动监听** — 以 userbot 方式加入群聊，静默收集所有文本消息
 - **广告过滤** — hash 精确去重 + trigram 85% 相似度 + 关键词黑名单 + 发送者拉黑
 - **Bio 采集** — 低速抓取疑似广告发送者 Bio，按账号合并多群出现记录
-- **AI 摘要** — 每日定时调用 LLM 生成按群分组的中文摘要
+- **AI 摘要** — 每日定时调用 LLM 生成按群分组的中文摘要，支持多上游自动切换
 - **实时告警** — 管理员/群主发送的消息命中关键词时立即推送
 - **Web 管理** — 暗色主题，中文界面，群组管理/消息浏览/设置/帮助
 - **Docker 部署** — 单容器，volume 持久化
@@ -99,6 +99,7 @@ python main.py
 | `WEB_PASSWORD` | 是 | - | Web 登录密码 |
 | `LLM_MODEL` | 否 | `deepseek-chat` | 模型名 |
 | `LLM_API_FORMAT` | 否 | `chat` | `chat` 或 `responses` |
+| `LLM_PROVIDERS` | 否 | - | 多上游 JSON 配置；存在时可不再设置单组 LLM 变量 |
 | `LLM_PROXY_URL` | 否 | - | LLM 调用代理 |
 | `SUMMARY_CRON` | 否 | `0 22 * * *` | 摘要时间（Asia/Shanghai） |
 | `SUMMARY_RETENTION_DAYS` | 否 | `7` | 摘要保留天数 |
@@ -127,6 +128,18 @@ LLM_PROXY_URL=http://127.0.0.1:7897
 ```
 
 Docker 中访问宿主机代理用 `host.docker.internal`。
+
+## LLM 备用上游与故障切换
+
+在 Web 管理面板的“设置 → LLM 上游与自动切换”中，可添加任意多个上游，并用“上移/下移”调整优先级。每个上游独立配置 Base URL、API Key、模型列表和 API 格式；模型列表每行一个，按填写顺序尝试。
+
+每次生成摘要时，系统会先按上游从上到下调用，并在同一上游内按模型列表顺序回退：请求异常、模型/密钥不可用或返回空内容时，立即尝试下一项；全部失败才按原有机制保留消息并等待后续重试。页面中的已保存 API Key 只显示末四位；不修改该字段即可在调整顺序时保留原 Key。保存时会保留首个模型到旧的 `model` 字段，已有单模型配置仍可继续使用。
+
+旧的 `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL` 和 `LLM_API_FORMAT` 配置完全兼容，会在首次打开设置页时作为优先级 1 显示。无 Web 面板的部署也可以使用 `LLM_PROVIDERS`：
+
+```env
+LLM_PROVIDERS=[{"id":"primary","base_url":"https://api.deepseek.com/v1","api_key":"sk-primary","models":["deepseek-chat","deepseek-reasoner"],"api_format":"chat"},{"id":"backup","base_url":"https://dashscope.aliyuncs.com/compatible-mode/v1","api_key":"sk-backup","models":["qwen-plus"],"api_format":"chat"}]
+```
 
 ## 广告过滤
 

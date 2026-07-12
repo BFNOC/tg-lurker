@@ -1,0 +1,12 @@
+{
+  "id": "llm-failover",
+  "title": "支持按顺序切换多个 LLM 上游配置",
+  "status": "completed",
+  "complexity": "L",
+  "risk": "medium",
+  "domain": "backend",
+  "currentPhase": "completed",
+  "nextAction": "已归档",
+  "createdAt": "2026-07-12T10:53:32Z",
+  "branch": "main"
+}

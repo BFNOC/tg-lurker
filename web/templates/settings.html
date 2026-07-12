@@ -89,36 +89,50 @@
     <div class="card animate-fade-in" style="animation-delay: 0.2s;">
         <div class="card-title">
             <svg style="width:20px;height:20px;" aria-hidden="true" role="img"><use href="#icon-settings"></use></svg>
-            LLM 配置 (大语言模型)
+            LLM 上游与自动切换
         </div>
-        
-        <div class="form-group">
-            <label for="llm_url">API 基础地址 (Base URL)</label>
-            <input type="url" id="llm_url" name="llm_base_url" value="{{ settings.llm_base_url }}" placeholder="https://api.deepseek.com/v1">
-        </div>
-
-        <div class="form-group">
-            <label for="llm_key">API 密钥 (API Key)</label>
-            <div class="input-wrapper">
-                <input type="password" id="llm_key" name="llm_api_key" value="{{ settings.llm_api_key }}">
-                <button type="button" class="password-toggle" aria-label="显示密码">
-                    <svg style="width:18px;height:18px;"><use href="#icon-eye"></use></svg>
-                </button>
+        <p style="margin-bottom:16px;font-size:13px;color:var(--text-muted);">
+            先按卡片从上到下尝试；同一上游内再按模型列表顺序切换。模型不可用、Key 失效或返回空内容时会自动尝试下一项。已保存的密钥仅显示末四位，留在原卡片中即可保留。
+        </p>
+        <div id="llm-providers">
+            {% for provider in settings.llm_providers %}
+            <div class="llm-provider-card" style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:18px;margin-bottom:14px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:10px;">
+                    <strong class="llm-provider-title">优先级 {{ loop.index }}</strong>
+                    <div style="display:flex;gap:6px;">
+                        <button type="button" class="btn btn-sm btn-ghost llm-move-up">上移</button>
+                        <button type="button" class="btn btn-sm btn-ghost llm-move-down">下移</button>
+                        <button type="button" class="btn btn-sm btn-ghost llm-remove" style="color:var(--danger);">删除</button>
+                    </div>
+                </div>
+                <input type="hidden" name="llm_provider_id" value="{{ provider.id }}">
+                <div class="form-group">
+                    <label>API 基础地址 (Base URL)</label>
+                    <input type="url" name="llm_provider_base_url" value="{{ provider.base_url }}" placeholder="https://api.deepseek.com/v1" required>
+                </div>
+                <div class="form-group">
+                    <label>API 密钥 (API Key)</label>
+                    <div class="input-wrapper">
+                        <input type="password" name="llm_provider_api_key" value="{{ provider.api_key }}" required>
+                        <button type="button" class="password-toggle" aria-label="显示密码"><svg style="width:18px;height:18px;"><use href="#icon-eye"></use></svg></button>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>模型列表 (每行一个，按顺序尝试)</label>
+                    <textarea name="llm_provider_models" rows="4" placeholder="deepseek-chat&#10;deepseek-reasoner" required>{{ provider.models }}</textarea>
+                    <div class="form-hint">第一个模型同时保存为兼容旧配置的默认模型。</div>
+                </div>
+                <div class="form-group" style="margin-bottom:0;">
+                    <label>API 调用格式</label>
+                    <select name="llm_provider_api_format">
+                        <option value="chat" {% if provider.api_format == "chat" %}selected{% endif %}>Chat Completions (/chat/completions)</option>
+                        <option value="responses" {% if provider.api_format == "responses" %}selected{% endif %}>Responses (/responses)</option>
+                    </select>
+                </div>
             </div>
+            {% endfor %}
         </div>
-
-        <div class="form-group">
-            <label for="llm_model">模型名称 (Model)</label>
-            <input type="text" id="llm_model" name="llm_model" value="{{ settings.llm_model }}" placeholder="deepseek-chat">
-        </div>
-
-        <div class="form-group" style="margin-bottom:0;">
-            <label for="llm_format">API 调用格式</label>
-            <select id="llm_format" name="llm_api_format">
-                <option value="chat" {% if settings.llm_api_format == "chat" %}selected{% endif %}>Chat Completions (/chat/completions)</option>
-                <option value="responses" {% if settings.llm_api_format == "responses" %}selected{% endif %}>Responses (/responses)</option>
-            </select>
-        </div>
+        <button type="button" id="add-llm-provider" class="btn btn-sm btn-ghost">添加备用上游</button>
     </div>
 
     <div class="card animate-fade-in" style="animation-delay: 0.3s;">
@@ -184,4 +198,66 @@
         </button>
     </div>
 </form>
+<template id="llm-provider-template">
+    <div class="llm-provider-card" style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:18px;margin-bottom:14px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:10px;">
+            <strong class="llm-provider-title">优先级</strong>
+            <div style="display:flex;gap:6px;">
+                <button type="button" class="btn btn-sm btn-ghost llm-move-up">上移</button>
+                <button type="button" class="btn btn-sm btn-ghost llm-move-down">下移</button>
+                <button type="button" class="btn btn-sm btn-ghost llm-remove" style="color:var(--danger);">删除</button>
+            </div>
+        </div>
+        <input type="hidden" name="llm_provider_id">
+        <div class="form-group"><label>API 基础地址 (Base URL)</label><input type="url" name="llm_provider_base_url" placeholder="https://api.example.com/v1" required></div>
+        <div class="form-group"><label>API 密钥 (API Key)</label><div class="input-wrapper"><input type="password" name="llm_provider_api_key" required><button type="button" class="password-toggle" aria-label="显示密码"><svg style="width:18px;height:18px;"><use href="#icon-eye"></use></svg></button></div></div>
+        <div class="form-group"><label>模型列表 (每行一个，按顺序尝试)</label><textarea name="llm_provider_models" rows="4" placeholder="model-name&#10;backup-model" required></textarea><div class="form-hint">第一个模型同时保存为兼容旧配置的默认模型。</div></div>
+        <div class="form-group" style="margin-bottom:0;"><label>API 调用格式</label><select name="llm_provider_api_format"><option value="chat">Chat Completions (/chat/completions)</option><option value="responses">Responses (/responses)</option></select></div>
+    </div>
+</template>
+<script>
+(() => {
+    const list = document.getElementById('llm-providers');
+    const template = document.getElementById('llm-provider-template');
+    const addButton = document.getElementById('add-llm-provider');
+    if (!list || !template || !addButton) return;
+
+    const updateCards = () => {
+        const cards = [...list.querySelectorAll('.llm-provider-card')];
+        cards.forEach((card, index) => {
+            card.querySelector('.llm-provider-title').textContent = `优先级 ${index + 1}`;
+            card.querySelector('.llm-move-up').disabled = index === 0;
+            card.querySelector('.llm-move-down').disabled = index === cards.length - 1;
+            card.querySelector('.llm-remove').disabled = cards.length === 1;
+        });
+    };
+    const bindCard = (card) => {
+        card.querySelector('.llm-move-up').addEventListener('click', () => {
+            const previous = card.previousElementSibling;
+            if (previous) list.insertBefore(card, previous);
+            updateCards();
+        });
+        card.querySelector('.llm-move-down').addEventListener('click', () => {
+            const next = card.nextElementSibling;
+            if (next) list.insertBefore(next, card);
+            updateCards();
+        });
+        card.querySelector('.llm-remove').addEventListener('click', () => {
+            if (list.querySelectorAll('.llm-provider-card').length > 1) card.remove();
+            updateCards();
+        });
+        if (window.initPasswordToggles) window.initPasswordToggles(card);
+    };
+    list.querySelectorAll('.llm-provider-card').forEach(bindCard);
+    addButton.addEventListener('click', () => {
+        const card = template.content.firstElementChild.cloneNode(true);
+        card.querySelector('[name="llm_provider_id"]').value = `provider-${crypto.randomUUID().replaceAll('-', '')}`;
+        list.appendChild(card);
+        bindCard(card);
+        updateCards();
+        card.querySelector('[name="llm_provider_base_url"]').focus();
+    });
+    updateCards();
+})();
+</script>
 {% endblock %}

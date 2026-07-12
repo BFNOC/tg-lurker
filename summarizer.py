@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 import httpx
 from openai import AsyncOpenAI
 
-from config import Config
+from config import Config, LLMProvider, parse_llm_providers
 from database import Database
 
 logger = logging.getLogger(__name__)
@@ -31,6 +31,25 @@ _REF_INSTRUCTION = "\n\n[重要] 每个话题必须引用 2-3 条关键消息来
 
 _REF_PATTERN = re.compile(r"\[m:(\d+)\]")
 
+LLM_PROVIDERS_SETTING = "llm_providers"
+
+
+async def load_llm_providers(config: Config, db: Database) -> list[LLMProvider]:
+    """Loads persisted providers, then environment providers, then legacy settings."""
+    saved_providers = parse_llm_providers(await db.get_setting(LLM_PROVIDERS_SETTING, ""))
+    if saved_providers:
+        return list(saved_providers)
+    if config.llm_providers:
+        return list(config.llm_providers)
+
+    base_url = await db.get_setting("llm_base_url", config.llm_base_url)
+    api_key = await db.get_setting("llm_api_key", config.llm_api_key)
+    model = await db.get_setting("llm_model", config.llm_model)
+    api_format = await db.get_setting("llm_api_format", config.llm_api_format)
+    if api_format not in ("chat", "responses"):
+        api_format = "chat"
+    return [LLMProvider("legacy", base_url, api_key, model, api_format)]
+
 
 class Summarizer:
     """Generates LLM-based summaries for Telegram group messages."""
@@ -41,14 +60,6 @@ class Summarizer:
         self._db = db
         self._tz = ZoneInfo(config.tz)
         self._lock = asyncio.Lock()
-
-    async def _reload_llm_config(self) -> tuple[str, str, str, str]:
-        """Loads LLM connection settings from the database, falling back to config defaults."""
-        base_url = await self._db.get_setting("llm_base_url", self._config.llm_base_url)
-        api_key = await self._db.get_setting("llm_api_key", self._config.llm_api_key)
-        model = await self._db.get_setting("llm_model", self._config.llm_model)
-        api_format = await self._db.get_setting("llm_api_format", self._config.llm_api_format)
-        return base_url, api_key, model, api_format
 
     async def _call_chat(self, client: AsyncOpenAI, model: str, system_prompt: str, user_prompt: str) -> str:
         """Calls the LLM via the chat completions API."""
@@ -76,26 +87,55 @@ class Summarizer:
         )
         return response.output_text or ""
 
-    async def _call_llm(self, system_prompt: str, user_prompt: str) -> str:
-        """Sends a prompt to the LLM and returns the generated text."""
-        base_url, api_key, model, api_format = await self._reload_llm_config()
-
+    async def _call_provider(
+        self, provider: LLMProvider, model: str, system_prompt: str, user_prompt: str
+    ) -> str:
+        """Calls one provider model and always releases its client resources."""
         proxy_url = self._config.llm_proxy_url
         http_client = httpx.AsyncClient(proxy=proxy_url) if proxy_url else None
 
         client = AsyncOpenAI(
-            base_url=base_url,
-            api_key=api_key,
+            base_url=provider.base_url,
+            api_key=provider.api_key,
             http_client=http_client,
             timeout=60.0,
         )
 
         try:
-            if api_format == "responses":
+            if provider.api_format == "responses":
                 return await self._call_responses(client, model, system_prompt, user_prompt)
             return await self._call_chat(client, model, system_prompt, user_prompt)
         finally:
             await client.close()
+
+    async def _call_llm(self, system_prompt: str, user_prompt: str) -> str:
+        """Calls providers in order, continuing after a failed or empty response."""
+        providers = await load_llm_providers(self._config, self._db)
+        failures: list[str] = []
+        for provider_index, provider in enumerate(providers, start=1):
+            for model_index, model in enumerate(provider.models, start=1):
+                try:
+                    response = (await self._call_provider(provider, model, system_prompt, user_prompt)).strip()
+                except Exception as exc:
+                    failures.append(type(exc).__name__)
+                    logger.warning(
+                        "LLM provider %d model %d (%s) failed: %s",
+                        provider_index,
+                        model_index,
+                        model,
+                        type(exc).__name__,
+                    )
+                    continue
+                if response:
+                    return response
+                failures.append("empty response")
+                logger.warning(
+                    "LLM provider %d model %d (%s) returned an empty response",
+                    provider_index,
+                    model_index,
+                    model,
+                )
+        raise RuntimeError(f"All {len(providers)} LLM providers failed ({', '.join(failures)})")
 
     def _truncate_messages(self, messages: list[dict], max_chars: int = 3000) -> str:
         """Formats messages into text, keeping the most recent ones within the character limit."""

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import logging
 import re
 import zipfile
@@ -43,6 +44,7 @@ FREQUENCY_LABELS = {
 
 QUICK_URL_DOMAINS = ("t.me", "pay.ldxp.cn")
 _URL_DOMAIN_FILTER_RE = re.compile(r"^[a-z0-9.-]+(?::[0-9]{1,5})?$")
+_PROVIDER_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
 
 
 def _require_auth(request: Request):
@@ -153,8 +155,9 @@ async def _quick_url_domains(db, query: str, source_type: str, selected_domain: 
 
 async def _settings_form_values(db, config) -> dict:
     """读取设置页表单值，并对需要约束的数字项做规范化。"""
-    raw_key = await db.get_setting("llm_api_key", config.llm_api_key)
-    masked_key = "••••••••" + raw_key[-4:] if len(raw_key) > 4 else "••••••••"
+    from summarizer import load_llm_providers
+
+    providers = await load_llm_providers(config, db)
     web_session_days = normalize_session_days(
         await db.get_setting(SESSION_DAYS_SETTING, str(config.web_session_days)),
         config.web_session_days,
@@ -164,10 +167,16 @@ async def _settings_form_values(db, config) -> dict:
         "summary_retention_days": await db.get_setting("summary_retention_days", str(config.summary_retention_days)),
         "tg_push_enabled": await db.get_setting("tg_push_enabled", str(config.tg_push_enabled).lower()),
         "web_session_days": str(web_session_days),
-        "llm_base_url": await db.get_setting("llm_base_url", config.llm_base_url),
-        "llm_api_key": masked_key,
-        "llm_model": await db.get_setting("llm_model", config.llm_model),
-        "llm_api_format": await db.get_setting("llm_api_format", config.llm_api_format),
+        "llm_providers": [
+            {
+                "id": provider.id,
+                "base_url": provider.base_url,
+                "api_key": _mask_api_key(provider.api_key),
+                "models": "\n".join(_provider_models(provider)),
+                "api_format": provider.api_format,
+            }
+            for provider in providers
+        ],
         "system_prompt": await db.get_setting("system_prompt", ""),
         "user_prompt": await db.get_setting("user_prompt", ""),
         "ad_keywords": await db.get_setting("ad_keywords", ""),
@@ -176,6 +185,76 @@ async def _settings_form_values(db, config) -> dict:
         "context_radius": await db.get_setting("context_radius", "30"),
         "context_max_rows": await db.get_setting("context_max_rows", "50000"),
     }
+
+
+def _mask_api_key(api_key: str) -> str:
+    """Returns a non-reversible display value for an API key."""
+    suffix = api_key[-4:] if len(api_key) > 4 else ""
+    return "••••••••" + suffix
+
+
+def _provider_models(provider) -> list[str]:
+    """Returns a provider's ordered model list, including legacy single-model data."""
+    models = getattr(provider, "models", None)
+    if models:
+        return [str(model).strip() for model in models if str(model).strip()]
+    model = str(provider.model).strip()
+    return [model] if model else []
+
+
+def _parse_provider_models(value) -> list[str]:
+    """Parses the model textarea while preserving the submitted order."""
+    return [line.strip() for line in str(value).splitlines() if line.strip()]
+
+
+async def _serialize_llm_providers(db, config, form) -> str:
+    """Validates ordered providers and returns their storage representation."""
+    from summarizer import LLM_PROVIDERS_SETTING, load_llm_providers
+
+    old_providers = {provider.id: provider for provider in await load_llm_providers(config, db)}
+    ids = form.getlist("llm_provider_id")
+    base_urls = form.getlist("llm_provider_base_url")
+    api_keys = form.getlist("llm_provider_api_key")
+    model_lists = form.getlist("llm_provider_models")
+    formats = form.getlist("llm_provider_api_format")
+    fields = (ids, base_urls, api_keys, model_lists, formats)
+    if not ids or len({len(values) for values in fields}) != 1:
+        raise ValueError("请至少配置一个完整的 LLM 上游")
+
+    providers: list[dict] = []
+    seen_ids: set[str] = set()
+    for provider_id, base_url, submitted_key, model_list, api_format in zip(*fields):
+        provider_id = str(provider_id).strip()
+        base_url = str(base_url).strip()
+        submitted_key = str(submitted_key).strip()
+        models = _parse_provider_models(model_list)
+        api_format = str(api_format).strip().lower()
+        if not _PROVIDER_ID_RE.fullmatch(provider_id) or provider_id in seen_ids:
+            raise ValueError("LLM 上游标识无效，请刷新页面后重试")
+        old_provider = old_providers.get(provider_id)
+        if old_provider and submitted_key == _mask_api_key(old_provider.api_key):
+            submitted_key = old_provider.api_key
+        if not base_url or not submitted_key or not models or api_format not in ("chat", "responses"):
+            raise ValueError("每个 LLM 上游都需要 Base URL、API Key、至少一个模型和调用格式")
+        providers.append({
+            "id": provider_id,
+            "base_url": base_url,
+            "api_key": submitted_key,
+            "models": models,
+            "model": models[0],
+            "api_format": api_format,
+        })
+        seen_ids.add(provider_id)
+
+    return json.dumps(providers, ensure_ascii=False, separators=(",", ":"))
+
+
+async def _save_llm_providers(db, config, form) -> None:
+    """Validates and persists ordered providers while preserving masked existing keys."""
+    from summarizer import LLM_PROVIDERS_SETTING
+
+    providers_json = await _serialize_llm_providers(db, config, form)
+    await db.set_setting(LLM_PROVIDERS_SETTING, providers_json)
 
 
 def _activity_class(avg_daily_messages: float) -> str:
@@ -1246,14 +1325,18 @@ async def save_settings(request: Request):
     config = request.app.state.config
     form = await request.form()
 
+    providers_json = None
+    if "llm_provider_id" in form:
+        try:
+            providers_json = await _serialize_llm_providers(db, config, form)
+        except ValueError as exc:
+            return HTMLResponse(f"<p style='color:var(--danger)'>{exc}</p>", status_code=422)
+
     for key in ("summary_cron", "summary_retention_days", "tg_push_enabled",
                 SESSION_DAYS_SETTING,
-                "llm_base_url", "llm_api_key", "llm_model", "llm_api_format",
                 "system_prompt", "user_prompt", "ad_keywords", "alert_keywords",
                 "filter_bot_messages", "context_radius", "context_max_rows"):
         value = form.get(key, "")
-        if key == "llm_api_key" and value.startswith("••••"):
-            continue
         if key == SESSION_DAYS_SETTING:
             if key not in form or str(value).strip() == "":
                 continue
@@ -1272,6 +1355,11 @@ async def save_settings(request: Request):
             await db.set_setting(key, str(value))
         elif key in ("system_prompt", "user_prompt", "ad_keywords", "alert_keywords"):
             await db.set_setting(key, "")
+
+    if providers_json is not None:
+        from summarizer import LLM_PROVIDERS_SETTING
+
+        await db.set_setting(LLM_PROVIDERS_SETTING, providers_json)
 
     bot = request.app.state.bot
     if bot and hasattr(bot, "_reload_alert_keywords"):
@@ -1366,7 +1454,6 @@ async def debug_curl(request: Request):
         return csrf_err
 
     import html as html_mod
-    import json
 
     db = request.app.state.db
     config = request.app.state.config
@@ -1376,10 +1463,12 @@ async def debug_curl(request: Request):
     selected = form.getlist("group_ids")
     target_date = form.get("biz_date", None) or datetime.now(tz).strftime("%Y-%m-%d")
 
-    base_url = await db.get_setting("llm_base_url", config.llm_base_url)
-    api_key = await db.get_setting("llm_api_key", config.llm_api_key)
-    model = await db.get_setting("llm_model", config.llm_model)
-    api_format = await db.get_setting("llm_api_format", config.llm_api_format)
+    from summarizer import load_llm_providers
+    provider = (await load_llm_providers(config, db))[0]
+    base_url = provider.base_url
+    api_key = provider.api_key
+    model = provider.model
+    api_format = provider.api_format
     system_prompt = await db.get_setting("system_prompt", "")
     user_prompt_tpl = await db.get_setting("user_prompt", "")
 
@@ -1408,7 +1497,7 @@ async def debug_curl(request: Request):
     msg_text = s._truncate_messages(messages)
     user_prompt = user_prompt_tpl.format(messages=msg_text)
 
-    masked_key = api_key[:8] + "..." + api_key[-4:] if len(api_key) > 12 else "sk-***"
+    masked_key = _mask_api_key(api_key)
 
     if api_format == "responses":
         body = {
