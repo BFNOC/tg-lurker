@@ -1,0 +1,12 @@
+{
+  "id": "test-llm-provider",
+  "title": "为 LLM 上游提供连接测试按钮",
+  "status": "completed",
+  "complexity": "M",
+  "risk": "medium",
+  "domain": "backend",
+  "currentPhase": "completed",
+  "nextAction": "已归档",
+  "createdAt": "2026-07-12T20:05:00+08:00",
+  "branch": "main"
+}

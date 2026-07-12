@@ -129,6 +129,12 @@
                         <option value="responses" {% if provider.api_format == "responses" %}selected{% endif %}>Responses (/responses)</option>
                     </select>
                 </div>
+                <div class="form-group" style="margin:14px 0 0;">
+                    <label>测试模型</label>
+                    <select class="llm-test-model" aria-label="测试模型"></select>
+                    <button type="button" class="btn btn-sm btn-ghost llm-test-connection" style="margin-top:8px;">测试连接</button>
+                    <span class="llm-test-result" role="status" style="font-size:13px;margin-left:10px;"></span>
+                </div>
             </div>
             {% endfor %}
         </div>
@@ -213,6 +219,7 @@
         <div class="form-group"><label>API 密钥 (API Key)</label><div class="input-wrapper"><input type="password" name="llm_provider_api_key" required><button type="button" class="password-toggle" aria-label="显示密码"><svg style="width:18px;height:18px;"><use href="#icon-eye"></use></svg></button></div></div>
         <div class="form-group"><label>模型列表 (每行一个，按顺序尝试)</label><textarea name="llm_provider_models" rows="4" placeholder="model-name&#10;backup-model" required></textarea><div class="form-hint">第一个模型同时保存为兼容旧配置的默认模型。</div></div>
         <div class="form-group" style="margin-bottom:0;"><label>API 调用格式</label><select name="llm_provider_api_format"><option value="chat">Chat Completions (/chat/completions)</option><option value="responses">Responses (/responses)</option></select></div>
+        <div class="form-group" style="margin:14px 0 0;"><label>测试模型</label><select class="llm-test-model" aria-label="测试模型"></select><button type="button" class="btn btn-sm btn-ghost llm-test-connection" style="margin-top:8px;">测试连接</button><span class="llm-test-result" role="status" style="font-size:13px;margin-left:10px;"></span></div>
     </div>
 </template>
 <script>
@@ -232,6 +239,44 @@
         });
     };
     const bindCard = (card) => {
+        const refreshTestModels = () => {
+            const select = card.querySelector('.llm-test-model');
+            const previous = select.value;
+            const models = card.querySelector('[name="llm_provider_models"]').value
+                .split(/\r?\n/).map((model) => model.trim()).filter(Boolean);
+            select.replaceChildren(...models.map((model) => new Option(model, model)));
+            if (models.includes(previous)) select.value = previous;
+            select.disabled = models.length === 0;
+        };
+        const testButton = card.querySelector('.llm-test-connection');
+        testButton.addEventListener('click', async () => {
+            const result = card.querySelector('.llm-test-result');
+            const originalText = testButton.textContent;
+            const formData = new FormData();
+            formData.set('csrf_token', document.querySelector('input[name="csrf_token"]').value);
+            formData.set('provider_id', card.querySelector('[name="llm_provider_id"]').value);
+            formData.set('base_url', card.querySelector('[name="llm_provider_base_url"]').value);
+            formData.set('api_key', card.querySelector('[name="llm_provider_api_key"]').value);
+            formData.set('model', card.querySelector('.llm-test-model').value);
+            formData.set('api_format', card.querySelector('[name="llm_provider_api_format"]').value);
+            testButton.disabled = true;
+            testButton.textContent = '测试中…';
+            result.textContent = '';
+            try {
+                const response = await fetch('/settings/test-llm-provider', { method: 'POST', body: formData });
+                const payload = await response.json();
+                result.textContent = payload.message || '测试失败';
+                result.style.color = payload.ok ? 'var(--success)' : 'var(--danger)';
+            } catch (_error) {
+                result.textContent = '连接测试请求失败';
+                result.style.color = 'var(--danger)';
+            } finally {
+                testButton.disabled = false;
+                testButton.textContent = originalText;
+            }
+        });
+        card.querySelector('[name="llm_provider_models"]').addEventListener('input', refreshTestModels);
+        refreshTestModels();
         card.querySelector('.llm-move-up').addEventListener('click', () => {
             const previous = card.previousElementSibling;
             if (previous) list.insertBefore(card, previous);

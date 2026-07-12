@@ -257,6 +257,50 @@ async def _save_llm_providers(db, config, form) -> None:
     await db.set_setting(LLM_PROVIDERS_SETTING, providers_json)
 
 
+async def _resolve_test_api_key(db, config, provider_id: str, submitted_key: str) -> str:
+    """Restores a saved key when a settings card submits its masked display value."""
+    from summarizer import load_llm_providers
+
+    provider = next(
+        (item for item in await load_llm_providers(config, db) if item.id == provider_id),
+        None,
+    )
+    if provider and submitted_key == _mask_api_key(provider.api_key):
+        return provider.api_key
+    if submitted_key.startswith("••••"):
+        raise ValueError("请重新填写 API Key")
+    return submitted_key
+
+
+async def _test_llm_provider_connection(config, base_url: str, api_key: str, model: str, api_format: str) -> None:
+    """Sends a minimal non-persistent request to one provider model."""
+    import httpx
+    from openai import AsyncOpenAI
+
+    http_client = httpx.AsyncClient(proxy=config.llm_proxy_url) if config.llm_proxy_url else None
+    client = AsyncOpenAI(base_url=base_url, api_key=api_key, http_client=http_client, timeout=15.0)
+    try:
+        if api_format == "responses":
+            response = await client.responses.create(
+                model=model,
+                input="Reply with OK.",
+                max_output_tokens=16,
+            )
+            content = response.output_text or ""
+        else:
+            response = await client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": "Reply with OK."}],
+                temperature=0,
+                max_tokens=16,
+            )
+            content = response.choices[0].message.content or ""
+        if not content.strip():
+            raise ValueError("empty response")
+    finally:
+        await client.close()
+
+
 def _activity_class(avg_daily_messages: float) -> str:
     """Maps an average daily message count to a CSS activity class."""
     if avg_daily_messages < 100:
@@ -1408,6 +1452,45 @@ async def test_push(request: Request):
         return HTMLResponse("<span style='color:var(--success);font-weight:600;'>已发送，请检查 Telegram</span>")
     except Exception as e:
         return HTMLResponse(f"<span style='color:var(--danger);font-weight:600;'>发送失败: {e}</span>")
+
+
+@router.post("/settings/test-llm-provider")
+async def test_llm_provider(request: Request):
+    """Tests unsaved settings-card connection fields without persisting them."""
+    redirect = _require_auth(request)
+    if redirect:
+        return redirect
+    csrf_err = await _require_csrf(request)
+    if csrf_err:
+        return csrf_err
+
+    form = await request.form()
+    provider_id = str(form.get("provider_id", "")).strip()
+    base_url = str(form.get("base_url", "")).strip()
+    api_key = str(form.get("api_key", "")).strip()
+    model = str(form.get("model", "")).strip()
+    api_format = str(form.get("api_format", "chat")).strip().lower()
+    if (
+        not _PROVIDER_ID_RE.fullmatch(provider_id)
+        or not base_url.startswith(("https://", "http://"))
+        or not api_key
+        or not model
+        or api_format not in ("chat", "responses")
+    ):
+        return JSONResponse({"ok": False, "message": "请填写有效的 Base URL、API Key、测试模型和调用格式。"}, status_code=422)
+
+    config = request.app.state.config
+    try:
+        api_key = await _resolve_test_api_key(request.app.state.db, config, provider_id, api_key)
+        await _test_llm_provider_connection(config, base_url, api_key, model, api_format)
+    except Exception as exc:
+        logger.warning("LLM provider connection test failed for %s: %s", provider_id, type(exc).__name__)
+        if isinstance(exc, ValueError) and str(exc) == "请重新填写 API Key":
+            return JSONResponse({"ok": False, "message": str(exc)}, status_code=422)
+        if isinstance(exc, ValueError) and str(exc) == "empty response":
+            return JSONResponse({"ok": False, "message": "连接失败：响应为空"})
+        return JSONResponse({"ok": False, "message": f"连接失败：{type(exc).__name__}"})
+    return JSONResponse({"ok": True, "message": f"连接成功：{model} 可用。"})
 
 
 @router.post("/summary/trigger")

@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from config import Config
 from database import Database
+from web import routes
 from web import create_app
 from web.auth import CSRF_COOKIE
 
@@ -57,6 +58,7 @@ def test_settings_page_masks_legacy_key_and_persists_provider_order(tmp_path):
         assert "••••••••-key" in page.text
         assert 'name="llm_provider_models"' in page.text
         assert 'name="llm_provider_model"' not in page.text
+        assert "llm-test-connection" in page.text
 
         providers = [
             {"id": "primary", "base_url": "https://one.example/v1", "api_key": "first-secret", "model": "model-one"},
@@ -139,3 +141,89 @@ def test_invalid_provider_does_not_partially_save_other_settings(tmp_path):
 
         assert response.status_code == 422
         assert asyncio.run(db.get_setting("system_prompt")) == "existing prompt"
+
+
+def test_llm_connection_test_uses_masked_saved_key_without_persisting(tmp_path, monkeypatch):
+    captured = {}
+
+    async def fake_test(_config, base_url, api_key, model, api_format):
+        captured.update(base_url=base_url, api_key=api_key, model=model, api_format=api_format)
+
+    monkeypatch.setattr(routes, "_test_llm_provider_connection", fake_test)
+    saved_provider = [{
+        "id": "primary",
+        "base_url": "https://saved.example/v1",
+        "api_key": "saved-secret-key",
+        "models": ["saved-model"],
+        "model": "saved-model",
+        "api_format": "chat",
+    }]
+    with _client(tmp_path) as (client, db):
+        asyncio.run(db.set_setting("llm_providers", json.dumps(saved_provider)))
+        response = client.post("/settings/test-llm-provider", data={
+            "csrf_token": client.cookies.get(CSRF_COOKIE),
+            "provider_id": "primary",
+            "base_url": "https://unsaved.example/v1",
+            "api_key": "••••••••-key",
+            "model": "selected-model",
+            "api_format": "responses",
+        })
+        persisted = asyncio.run(db.get_setting("llm_providers"))
+
+    assert response.json() == {"ok": True, "message": "连接成功：selected-model 可用。"}
+    assert captured == {
+        "base_url": "https://unsaved.example/v1",
+        "api_key": "saved-secret-key",
+        "model": "selected-model",
+        "api_format": "responses",
+    }
+    assert json.loads(persisted) == saved_provider
+
+
+def test_llm_connection_test_rejects_invalid_fields(tmp_path):
+    with _client(tmp_path) as (client, _db):
+        response = client.post("/settings/test-llm-provider", data={
+            "csrf_token": client.cookies.get(CSRF_COOKIE),
+            "provider_id": "invalid id!",
+            "base_url": "not-a-url",
+            "api_key": "key",
+            "model": "",
+            "api_format": "unknown",
+        })
+
+    assert response.status_code == 422
+    assert response.json()["ok"] is False
+
+
+def test_llm_connection_test_rejects_unresolvable_masked_key(tmp_path):
+    with _client(tmp_path) as (client, _db):
+        response = client.post("/settings/test-llm-provider", data={
+            "csrf_token": client.cookies.get(CSRF_COOKIE),
+            "provider_id": "new-provider",
+            "base_url": "https://example.com/v1",
+            "api_key": "••••••••-key",
+            "model": "test-model",
+            "api_format": "chat",
+        })
+
+    assert response.status_code == 422
+    assert response.json() == {"ok": False, "message": "请重新填写 API Key"}
+
+
+def test_llm_connection_test_does_not_leak_key_on_failure(tmp_path, monkeypatch):
+    async def fake_test(*_args):
+        raise RuntimeError("never-expose-this-key")
+
+    monkeypatch.setattr(routes, "_test_llm_provider_connection", fake_test)
+    with _client(tmp_path) as (client, _db):
+        response = client.post("/settings/test-llm-provider", data={
+            "csrf_token": client.cookies.get(CSRF_COOKIE),
+            "provider_id": "primary",
+            "base_url": "https://example.com/v1",
+            "api_key": "never-expose-this-key",
+            "model": "test-model",
+            "api_format": "chat",
+        })
+
+    assert response.json() == {"ok": False, "message": "连接失败：RuntimeError"}
+    assert "never-expose-this-key" not in response.text
