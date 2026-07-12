@@ -1,0 +1,12 @@
+{
+  "id": "release-version-bump",
+  "title": "清理审查临时文件并提升发布版本",
+  "status": "completed",
+  "complexity": "S",
+  "risk": "low",
+  "domain": "release",
+  "currentPhase": "completed",
+  "nextAction": "已归档",
+  "createdAt": "2026-07-12T19:55:00+08:00",
+  "branch": "main"
+}
